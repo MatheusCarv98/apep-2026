@@ -3,7 +3,6 @@ import {
   Fish, Trophy, Medal, Users, Calendar, Plus, Trash2, ChevronRight,
   Anchor, Waves, Award, Scale, X, Loader2, Check, AlertTriangle, Lock, LockOpen
 } from "lucide-react";
-import { supabase } from "./supabaseClient";
 
 /* ---------------------------------------------------------------
    TABELA COSAPYL — pontuação por posição (1ª a 30ª colocação)
@@ -32,7 +31,7 @@ const LOGO_SRC = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANwAAADcCAYAAAAb
 const STORAGE_KEY = "apep-2026-dados";
 
 function emptyEntry() {
-  return { adimplente: true, raia: "", peso: "", quantidade: "", maiorPeixe: "", papaTerra: false, papaTerraPeso: "" };
+  return { adimplente: true, raia: "", peso: "", quantidade: "", maiorPeixe: "", peixesExoticos: "", papaTerra: false, papaTerraPeso: "" };
 }
 
 function fmt(n, d = 3) {
@@ -70,20 +69,16 @@ export default function ApepApp() {
   useEffect(() => {
     (async () => {
       try {
-        const { data, error } = await supabase
-          .from("apep_dados")
-          .select("pescadores, etapas")
-          .eq("id", "atual")
-          .maybeSingle();
-        if (error) throw error;
-        if (data) {
+        const res = await window.storage.get(STORAGE_KEY, true);
+        if (res && res.value) {
+          const data = JSON.parse(res.value);
           setPescadores(data.pescadores || []);
           const obj = {};
           for (let i = 1; i <= N_ETAPAS; i++) obj[i] = (data.etapas && data.etapas[i]) || {};
           setEtapas(obj);
         }
       } catch (e) {
-        console.error("Falha ao carregar", e);
+        // no data yet
       } finally {
         setLoaded(true);
       }
@@ -96,15 +91,11 @@ export default function ApepApp() {
     clearTimeout(persist._t);
     persist._t = setTimeout(async () => {
       try {
-        const { error } = await supabase
-          .from("apep_dados")
-          .upsert({
-            id: "atual",
-            pescadores: nextPescadores,
-            etapas: nextEtapas,
-            updated_at: new Date().toISOString(),
-          });
-        if (error) throw error;
+        await window.storage.set(
+          STORAGE_KEY,
+          JSON.stringify({ pescadores: nextPescadores, etapas: nextEtapas }),
+          true
+        );
       } catch (e) {
         console.error("Falha ao salvar", e);
       } finally {
@@ -128,15 +119,11 @@ export default function ApepApp() {
     clearTimeout(persist._t);
     setSaving(true);
     try {
-      const { error } = await supabase
-        .from("apep_dados")
-        .upsert({
-          id: "atual",
-          pescadores,
-          etapas,
-          updated_at: new Date().toISOString(),
-        });
-      if (error) throw error;
+      await window.storage.set(
+        STORAGE_KEY,
+        JSON.stringify({ pescadores, etapas }),
+        true
+      );
       showToast("Dados salvos com sucesso!");
     } catch (e) {
       console.error("Falha ao salvar", e);
@@ -211,14 +198,18 @@ export default function ApepApp() {
     const lista = pescadoresPorCat(cat)
       .map((p) => {
         const e = (etapas[etapa] || {})[p.id];
-        const peso = e && e.peso !== "" ? parseFloat(e.peso) : null;
+        const pesoDeclarado = e && e.peso !== "" ? parseFloat(e.peso) : null;
+        const qtdExoticos = e && e.peixesExoticos !== "" ? parseFloat(e.peixesExoticos) : 0;
+        const bonusExoticos = (qtdExoticos || 0) * 0.5;
+        const pesoTotal = pesoDeclarado !== null ? pesoDeclarado + bonusExoticos : null;
         return {
           pescador: p,
           entry: e || null,
-          peso: e && e.adimplente && peso !== null && peso > 0 ? peso : null,
+          peso: e && e.adimplente && pesoTotal !== null && pesoTotal > 0 ? pesoTotal : null,
           adimplente: e ? e.adimplente : true,
           maiorPeixe: e && e.maiorPeixe !== "" ? parseFloat(e.maiorPeixe) : 0,
           quantidade: e && e.quantidade !== "" ? parseFloat(e.quantidade) : 0,
+          peixesExoticos: qtdExoticos || 0,
         };
       })
       .filter((r) => r.peso !== null);
@@ -565,7 +556,7 @@ function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores
   return (
     <div>
       <div style={S.card}>
-        <SectionTitle icon={Scale} title="Lançar pesagem da etapa" subtitle="Peso total em kg (ex.: 3.250). A posição e os pontos COSAPYL são calculados automaticamente." />
+        <SectionTitle icon={Scale} title="Lançar pesagem da etapa" subtitle="Peso total em kg (ex.: 3.250). Cada peixe exótico (arraia, cação, tarpon etc.) soma +0,500kg ao peso. A posição e os pontos COSAPYL são calculados automaticamente." />
         <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 18 }}>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
             {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => (
@@ -596,6 +587,7 @@ function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores
                   <th style={S.th}>Peso total (kg)</th>
                   <th style={S.th}>Qtd. peixes</th>
                   <th style={S.th}>Maior peixe (kg)</th>
+                  <th style={S.th}>Peixes exóticos (qtd)</th>
                   <th style={S.th}>Papa-terra?</th>
                   <th style={S.th}>Peso papa-terra (kg)</th>
                 </tr>
@@ -639,6 +631,14 @@ function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores
                           value={e.maiorPeixe}
                           onChange={(ev) => updateEntry(etapaAtual, p.id, "maiorPeixe", ev.target.value)}
                           style={S.cellInput}
+                        />
+                      </td>
+                      <td style={S.td}>
+                        <input
+                          type="number" step="1" min="0" placeholder="0"
+                          value={e.peixesExoticos}
+                          onChange={(ev) => updateEntry(etapaAtual, p.id, "peixesExoticos", ev.target.value)}
+                          style={{ ...S.cellInput, width: 70 }}
                         />
                       </td>
                       <td style={S.td}>
