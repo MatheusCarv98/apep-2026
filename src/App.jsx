@@ -3,6 +3,7 @@ import {
   Fish, Trophy, Medal, Users, Calendar, Plus, Trash2, ChevronRight,
   Anchor, Waves, Award, Scale, X, Loader2, Check, AlertTriangle, Lock, LockOpen
 } from "lucide-react";
+import { supabase } from "./supabaseClient";
 
 /* ---------------------------------------------------------------
    TABELA COSAPYL — pontuação por posição (1ª a 30ª colocação)
@@ -69,16 +70,20 @@ export default function ApepApp() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.storage.get(STORAGE_KEY, true);
-        if (res && res.value) {
-          const data = JSON.parse(res.value);
+        const { data, error } = await supabase
+          .from("apep_dados")
+          .select("pescadores, etapas")
+          .eq("id", "atual")
+          .maybeSingle();
+        if (error) throw error;
+        if (data) {
           setPescadores(data.pescadores || []);
           const obj = {};
           for (let i = 1; i <= N_ETAPAS; i++) obj[i] = (data.etapas && data.etapas[i]) || {};
           setEtapas(obj);
         }
       } catch (e) {
-        // no data yet
+        console.error("Falha ao carregar", e);
       } finally {
         setLoaded(true);
       }
@@ -91,11 +96,15 @@ export default function ApepApp() {
     clearTimeout(persist._t);
     persist._t = setTimeout(async () => {
       try {
-        await window.storage.set(
-          STORAGE_KEY,
-          JSON.stringify({ pescadores: nextPescadores, etapas: nextEtapas }),
-          true
-        );
+        const { error } = await supabase
+          .from("apep_dados")
+          .upsert({
+            id: "atual",
+            pescadores: nextPescadores,
+            etapas: nextEtapas,
+            updated_at: new Date().toISOString(),
+          });
+        if (error) throw error;
       } catch (e) {
         console.error("Falha ao salvar", e);
       } finally {
@@ -119,11 +128,15 @@ export default function ApepApp() {
     clearTimeout(persist._t);
     setSaving(true);
     try {
-      await window.storage.set(
-        STORAGE_KEY,
-        JSON.stringify({ pescadores, etapas }),
-        true
-      );
+      const { error } = await supabase
+        .from("apep_dados")
+        .upsert({
+          id: "atual",
+          pescadores,
+          etapas,
+          updated_at: new Date().toISOString(),
+        });
+      if (error) throw error;
       showToast("Dados salvos com sucesso!");
     } catch (e) {
       console.error("Falha ao salvar", e);
