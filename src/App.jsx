@@ -1482,6 +1482,7 @@ input[type=number]::-webkit-inner-spin-button { opacity: 0.4; }
 table { font-family: 'Inter', system-ui, sans-serif; }
 
 .classif-grid { display: grid; grid-template-columns: 1.7fr 1.1fr; gap: 16px; align-items: start; }
+.classif-grid > * { min-width: 0; }
 @media (max-width: 900px) {
   .classif-grid { grid-template-columns: 1fr; }
 }
