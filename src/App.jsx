@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Fish, Trophy, Medal, Users, Calendar, Plus, Trash2, ChevronRight,
-  Anchor, Waves, Award, Scale, X, Loader2, Check, AlertTriangle, Lock, LockOpen
+  Anchor, Waves, Award, Scale, X, Loader2, Check, AlertTriangle, Lock, LockOpen, TrendingUp, Weight
 } from "lucide-react";
+import {
+  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
+} from "recharts";
 import { supabase } from "./supabaseClient";
 
 /* ---------------------------------------------------------------
@@ -302,6 +305,23 @@ export default function ApepApp() {
     return out;
   }, [classificacaoGeral]);
 
+  const totalKgGeral = useMemo(() => {
+    let total = 0;
+    ["F", "M"].forEach((cat) => {
+      for (let et = 1; et <= N_ETAPAS; et++) {
+        pescadoresPorCat(cat).forEach((p) => {
+          const e = (etapas[et] || {})[p.id];
+          if (!e) return;
+          const pesoDeclarado = e.peso !== "" ? parseFloat(e.peso) : 0;
+          const qtdExoticos = e.peixesExoticos !== "" ? parseFloat(e.peixesExoticos) : 0;
+          const bonus = (qtdExoticos || 0) * 0.5;
+          total += (pesoDeclarado || 0) + bonus;
+        });
+      }
+    });
+    return total;
+  }, [pescadores, etapas]);
+
   if (!loaded) {
     return (
       <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 420 }}>
@@ -348,7 +368,18 @@ export default function ApepApp() {
         )}
 
         {tab === "classificacao" && (
-          <ClassificacaoTab catAtual={catAtual} setCatAtual={setCatAtual} linhas={classificacaoGeral[catAtual] || []} />
+          <ClassificacaoTab catAtual={catAtual} setCatAtual={setCatAtual} linhas={classificacaoGeral[catAtual] || []} totalKgGeral={totalKgGeral} />
+        )}
+
+        {tab === "evolucao" && (
+          <EvolucaoTab
+            catAtual={catAtual}
+            setCatAtual={setCatAtual}
+            pescadores={pescadoresPorCat(catAtual)}
+            etapas={etapas}
+            classificacaoGeral={classificacaoGeral[catAtual] || []}
+            rankingEtapa={rankingEtapa}
+          />
         )}
 
         {tab === "premios" && (
@@ -466,6 +497,7 @@ function Header({ saving, isAdmin, onLock }) {
 function Tabs({ tab, setTab, isAdmin }) {
   const items = [
     { id: "classificacao", label: "Classificação", icon: Trophy },
+    { id: "evolucao", label: "Evolução", icon: TrendingUp },
     { id: "premios", label: "Prêmios", icon: Award },
     { id: "etapa", label: "Lançar Etapa", icon: Scale, restrito: true },
     { id: "pescadores", label: "Pescadores", icon: Users, restrito: true },
@@ -725,11 +757,32 @@ function PosicaoBadge({ pos }) {
 
 /* ================= CLASSIFICAÇÃO GERAL ================= */
 
-function ClassificacaoTab({ catAtual, setCatAtual, linhas }) {
+function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral }) {
   const topN = TOP_GERAL[catAtual];
   return (
     <div style={S.card}>
       <SectionTitle icon={Trophy} title="Classificação Geral do Campeonato" subtitle={`Soma dos pontos das ${N_ETAPAS} etapas, descartando a de menor pontuação. Top ${topN} recebem troféu e material de pesca.`} />
+
+      <div
+        style={{
+          display: "flex", alignItems: "center", gap: 12,
+          background: "linear-gradient(135deg, #0B5E22, #0d7a2c)",
+          borderRadius: 12, padding: "14px 18px", marginBottom: 18, color: "#fff",
+        }}
+      >
+        <div style={{ width: 38, height: 38, borderRadius: 10, background: "rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+          <Weight size={19} color="#fff" />
+        </div>
+        <div>
+          <div style={{ fontFamily: S.fonts.display, fontSize: 20, fontWeight: 700, lineHeight: 1.1 }}>
+            {fmt(totalKgGeral)} kg
+          </div>
+          <div style={{ fontFamily: S.fonts.body, fontSize: 12, opacity: 0.85 }}>
+            Total pescado no campeonato (masculino + feminino, todas as etapas)
+          </div>
+        </div>
+      </div>
+
       <div style={{ marginBottom: 16 }}>
         <CatSwitch cat={catAtual} setCat={setCatAtual} />
       </div>
@@ -783,6 +836,126 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas }) {
             </tbody>
           </table>
         </div>
+      )}
+    </div>
+  );
+}
+
+/* ================= EVOLUÇÃO POR ETAPA ================= */
+
+const CHART_COLORS = ["#0B5E22", "#E8B800", "#1B7FB8", "#C0453F", "#7A4FB5", "#D97A2B", "#3F9E8C", "#B5651D", "#5B6B6F", "#C74E8B"];
+
+function EvolucaoTab({ catAtual, setCatAtual, pescadores, etapas, classificacaoGeral, rankingEtapa }) {
+  const [metrica, setMetrica] = useState("peso"); // "peso" | "pontos"
+
+  const ordenados = useMemo(() => {
+    const posPorId = {};
+    classificacaoGeral.forEach((l) => (posPorId[l.pescador.id] = l.posicao));
+    return [...pescadores].sort((a, b) => (posPorId[a.id] || 999) - (posPorId[b.id] || 999));
+  }, [pescadores, classificacaoGeral]);
+
+  const [selecionados, setSelecionados] = useState(null);
+  const idsPadrao = useMemo(() => new Set(ordenados.slice(0, 5).map((p) => p.id)), [ordenados]);
+  const ativos = selecionados || idsPadrao;
+
+  function toggle(id) {
+    const atual = new Set(selecionados || idsPadrao);
+    if (atual.has(id)) atual.delete(id);
+    else atual.add(id);
+    setSelecionados(atual);
+  }
+
+  const chartData = useMemo(() => {
+    const porEtapa = [];
+    for (let et = 1; et <= N_ETAPAS; et++) {
+      const rk = rankingEtapa(et, catAtual);
+      const mapa = {};
+      rk.forEach((r) => {
+        mapa[r.pescador.id] = metrica === "peso" ? r.peso : r.pontos;
+      });
+      const ponto = { etapa: `E${et}` };
+      ordenados.forEach((p) => {
+        if (ativos.has(p.id)) ponto[p.nome] = mapa[p.id] !== undefined ? mapa[p.id] : null;
+      });
+      porEtapa.push(ponto);
+    }
+    return porEtapa;
+  }, [etapas, catAtual, metrica, ordenados, ativos]);
+
+  return (
+    <div style={S.card}>
+      <SectionTitle icon={TrendingUp} title="Evolução por Etapa" subtitle="Acompanhe o desempenho de cada pescador(a) ao longo do campeonato." />
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+        <CatSwitch cat={catAtual} setCat={setCatAtual} />
+        <div style={S.catSwitch}>
+          {[
+            { id: "peso", label: "Peso (kg)" },
+            { id: "pontos", label: "Pontos COSAPYL" },
+          ].map((m) => {
+            const active = metrica === m.id;
+            return (
+              <button
+                key={m.id}
+                onClick={() => setMetrica(m.id)}
+                style={{ ...S.catBtn, background: active ? S.colors.deep : "transparent", color: active ? "#fff" : S.colors.deep }}
+              >
+                {m.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {ordenados.length === 0 ? (
+        <div style={S.emptyNote}>Nenhum pescador(a) cadastrado em {CATS[catAtual].label} ainda.</div>
+      ) : (
+        <>
+          <div style={{ width: "100%", height: 340, marginBottom: 18 }}>
+            <ResponsiveContainer>
+              <LineChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#EDE8D9" />
+                <XAxis dataKey="etapa" tick={{ fontSize: 12.5, fontFamily: "Inter" }} stroke="#8a9b9e" />
+                <YAxis tick={{ fontSize: 12.5, fontFamily: "Inter" }} stroke="#8a9b9e" />
+                <Tooltip
+                  formatter={(value) => (value === null || value === undefined ? "—" : metrica === "peso" ? `${fmt(value)} kg` : fmtPts(value))}
+                  contentStyle={{ fontFamily: "Inter", fontSize: 12.5, borderRadius: 8, border: "1px solid #EDE8D9" }}
+                />
+                <Legend wrapperStyle={{ fontFamily: "Inter", fontSize: 12.5 }} />
+                {ordenados
+                  .map((p, idx) => ({ p, idx }))
+                  .filter(({ p }) => ativos.has(p.id))
+                  .map(({ p, idx }) => (
+                    <Line
+                      key={p.id}
+                      type="monotone"
+                      dataKey={p.nome}
+                      stroke={CHART_COLORS[idx % CHART_COLORS.length]}
+                      strokeWidth={2.5}
+                      dot={{ r: 3.5 }}
+                      connectNulls
+                    />
+                  ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, fontWeight: 700, color: S.colors.deep, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3 }}>
+            Mostrar no gráfico
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px" }}>
+            {ordenados.map((p, idx) => {
+              const on = ativos.has(p.id);
+              return (
+                <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: S.fonts.body, fontSize: 13, color: on ? S.colors.deep : "#9aa5ae", cursor: "pointer" }}>
+                  <input type="checkbox" checked={on} onChange={() => toggle(p.id)} />
+                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: on ? CHART_COLORS[idx % CHART_COLORS.length] : "#D9D3C2", display: "inline-block" }} />
+                  {p.nome}
+                </label>
+              );
+            })}
+          </div>
+        </>
       )}
     </div>
   );
