@@ -1,11 +1,14 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Fish, Trophy, Medal, Users, Calendar, Plus, Trash2, ChevronRight,
-  Anchor, Waves, Award, Scale, X, Loader2, Check, AlertTriangle, Lock, LockOpen, TrendingUp, Weight
+  Anchor, Waves, Award, Scale, X, Loader2, Check, AlertTriangle, Lock, LockOpen, TrendingUp, Weight,
+  Camera, FileDown, User
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
 } from "recharts";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import { supabase } from "./supabaseClient";
 
 /* ---------------------------------------------------------------
@@ -42,12 +45,69 @@ function fmt(n, d = 3) {
   if (n === null || n === undefined || isNaN(n)) return "—";
   return Number(n).toLocaleString("pt-BR", { minimumFractionDigits: d, maximumFractionDigits: d });
 }
+function fmtInt(n) {
+  if (n === null || n === undefined || isNaN(n)) return "0";
+  return Number(n).toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
 function fmtPts(n) {
   if (n === null || n === undefined || isNaN(n)) return "—";
   return Number(n).toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
 }
 
 const ADMIN_PIN = "APEP2026";
+
+function resizeImageFile(file, size = 240) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        const lado = Math.min(img.width, img.height);
+        const sx = (img.width - lado) / 2;
+        const sy = (img.height - lado) / 2;
+        ctx.drawImage(img, sx, sy, lado, lado, 0, 0, size, size);
+        resolve(canvas.toDataURL("image/jpeg", 0.82));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function Avatar({ foto, nome, size = 40, cor = "#0B5E22" }) {
+  if (foto) {
+    return (
+      <img
+        src={foto}
+        alt={nome}
+        style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "1px solid #EDE8D9" }}
+      />
+    );
+  }
+  const iniciais = (nome || "?")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase())
+    .join("");
+  return (
+    <div
+      style={{
+        width: size, height: size, borderRadius: "50%", flexShrink: 0,
+        background: `${cor}1A`, color: cor, display: "flex", alignItems: "center", justifyContent: "center",
+        fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: size * 0.38,
+      }}
+    >
+      {iniciais || <User size={size * 0.5} />}
+    </div>
+  );
+}
 
 export default function ApepApp() {
   const [loaded, setLoaded] = useState(false);
@@ -193,6 +253,15 @@ export default function ApepApp() {
       return next;
     });
   }
+  async function updatePescadorFoto(id, file) {
+    try {
+      const dataUrl = await resizeImageFile(file, 240);
+      setPescadores((prev) => prev.map((p) => (p.id === id ? { ...p, foto: dataUrl } : p)));
+    } catch (e) {
+      console.error("Falha ao processar foto", e);
+      showToast("Não foi possível carregar essa imagem.");
+    }
+  }
 
   function updateEntry(etapa, pescadorId, field, value) {
     setEtapas((prev) => {
@@ -245,12 +314,20 @@ export default function ApepApp() {
     ["F", "M"].forEach((cat) => {
       const porPescador = {};
       pescadoresPorCat(cat).forEach((p) => {
-        porPescador[p.id] = { pescador: p, etapaPontos: {}, maiorPeixeTemp: 0, qtdTemp: 0, papaTerraTemp: 0 };
+        porPescador[p.id] = { pescador: p, etapaPontos: {}, etapaDetalhe: {}, maiorPeixeTemp: 0, qtdTemp: 0, papaTerraTemp: 0 };
       });
       for (let et = 1; et <= N_ETAPAS; et++) {
         const rk = rankingEtapa(et, cat);
         rk.forEach((r) => {
           porPescador[r.pescador.id].etapaPontos[et] = r.pontos;
+          porPescador[r.pescador.id].etapaDetalhe[et] = {
+            peso: r.peso,
+            quantidade: r.quantidade,
+            maiorPeixe: r.maiorPeixe,
+            peixesExoticos: r.peixesExoticos,
+            pos: r.pos,
+            pontos: r.pontos,
+          };
         });
         // season totals (todas etapas, mesmo descartadas contam p/ prêmios especiais)
         Object.values((etapas[et] || {})).forEach((e, i) => {});
@@ -263,6 +340,14 @@ export default function ApepApp() {
           if (mp > porPescador[p.id].maiorPeixeTemp) porPescador[p.id].maiorPeixeTemp = mp;
           porPescador[p.id].qtdTemp += qt || 0;
           if (pt > porPescador[p.id].papaTerraTemp) porPescador[p.id].papaTerraTemp = pt;
+          const pesoEtapaKg = e.peso !== "" ? parseFloat(e.peso) : 0;
+          const exoticosEtapa = e.peixesExoticos !== "" ? parseFloat(e.peixesExoticos) : 0;
+          porPescador[p.id].pesoTemp = (porPescador[p.id].pesoTemp || 0) + (pesoEtapaKg || 0) + (exoticosEtapa || 0) * 0.5;
+          if (porPescador[p.id].etapaDetalhe[et]) {
+            porPescador[p.id].etapaDetalhe[et].papaTerra = !!e.papaTerra;
+            porPescador[p.id].etapaDetalhe[et].papaTerraPeso = pt;
+            porPescador[p.id].etapaDetalhe[et].adimplente = e.adimplente;
+          }
         });
       }
       const linhas = Object.values(porPescador).map((row) => {
@@ -349,6 +434,7 @@ export default function ApepApp() {
             setNovoCat={setNovoCat}
             addPescador={addPescador}
             removePescador={removePescador}
+            updatePescadorFoto={updatePescadorFoto}
           />
         )}
 
@@ -546,10 +632,10 @@ function CatSwitch({ cat, setCat }) {
 
 /* ================= PESCADORES ================= */
 
-function PescadoresTab({ pescadores, novoNome, setNovoNome, novoCat, setNovoCat, addPescador, removePescador }) {
+function PescadoresTab({ pescadores, novoNome, setNovoNome, novoCat, setNovoCat, addPescador, removePescador, updatePescadorFoto }) {
   return (
     <div style={S.card}>
-      <SectionTitle icon={Users} title="Pescadores associados" subtitle="Cadastre os atletas para poder lançar as pesagens de cada etapa." />
+      <SectionTitle icon={Users} title="Pescadores associados" subtitle="Cadastre os atletas para poder lançar as pesagens de cada etapa. Toque no círculo pra adicionar uma foto." />
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         <input
           value={novoNome}
@@ -580,7 +666,24 @@ function PescadoresTab({ pescadores, novoNome, setNovoNome, novoCat, setNovoCat,
               <div style={{ display: "grid", gap: 6 }}>
                 {lista.map((p) => (
                   <div key={p.id} style={S.rowItem}>
-                    <span style={{ fontFamily: S.fonts.body, fontSize: 14.5, color: S.colors.deep }}>{p.nome}</span>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <label style={{ position: "relative", cursor: "pointer" }} title="Trocar foto">
+                        <Avatar foto={p.foto} nome={p.nome} size={34} cor={CATS[cat].color} />
+                        <span
+                          style={{
+                            position: "absolute", bottom: -2, right: -2, width: 16, height: 16, borderRadius: "50%",
+                            background: S.colors.deep, display: "flex", alignItems: "center", justifyContent: "center", border: "1.5px solid #fff",
+                          }}
+                        >
+                          <Camera size={9} color="#fff" />
+                        </span>
+                        <input
+                          type="file" accept="image/*" style={{ display: "none" }}
+                          onChange={(e) => e.target.files[0] && updatePescadorFoto(p.id, e.target.files[0])}
+                        />
+                      </label>
+                      <span style={{ fontFamily: S.fonts.body, fontSize: 14.5, color: S.colors.deep }}>{p.nome}</span>
+                    </div>
                     <button onClick={() => removePescador(p.id)} style={S.iconBtnGhost} title="Remover">
                       <Trash2 size={15} />
                     </button>
@@ -722,12 +825,18 @@ function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores
 
       {ranking.length > 0 && (
         <div style={{ ...S.card, marginTop: 16 }}>
-          <SectionTitle icon={Trophy} title={`Resultado da Etapa ${etapaAtual} — ${CATS[catAtual].label}`} subtitle="Classificação pelo peso total e pontuação COSAPYL." />
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
+            <SectionTitle icon={Trophy} title={`Resultado da Etapa ${etapaAtual} — ${CATS[catAtual].label}`} subtitle="Classificação pelo peso total e pontuação COSAPYL." />
+            <button onClick={() => exportarEtapaPDF(etapaAtual, catAtual, ranking)} style={S.btnGhost}>
+              <FileDown size={15} style={{ marginRight: 6 }} /> Baixar PDF
+            </button>
+          </div>
           <div style={{ display: "grid", gap: 6 }}>
             {ranking.map((r) => (
               <div key={r.pescador.id} style={{ ...S.rankRow, ...(r.pos <= 3 ? S.rankRowTop : {}) }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <PosicaoBadge pos={r.pos} />
+                  <Avatar foto={r.pescador.foto} nome={r.pescador.nome} size={28} cor={CATS[catAtual].color} />
                   <span style={{ fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep, fontSize: 14.5 }}>{r.pescador.nome}</span>
                 </div>
                 <div style={{ display: "flex", gap: 18, alignItems: "center", fontFamily: S.fonts.body }}>
@@ -759,342 +868,60 @@ function PosicaoBadge({ pos }) {
 
 function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral }) {
   const topN = TOP_GERAL[catAtual];
-  return (
-    <div style={S.card}>
-      <SectionTitle icon={Trophy} title="Classificação Geral do Campeonato" subtitle={`Soma dos pontos das ${N_ETAPAS} etapas, descartando a de menor pontuação. Top ${topN} recebem troféu e material de pesca.`} />
+  const [selecionadoId, setSelecionadoId] = useState(null);
 
-      <div
-        style={{
-          display: "flex", alignItems: "center", gap: 12,
-          background: "linear-gradient(135deg, #0B5E22, #0d7a2c)",
-          borderRadius: 12, padding: "14px 18px", marginBottom: 18, color: "#fff",
-        }}
-      >
-        <div style={{ width: 38, height: 38, borderRadius: 10, background: "rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-          <Weight size={19} color="#fff" />
-        </div>
-        <div>
-          <div style={{ fontFamily: S.fonts.display, fontSize: 20, fontWeight: 700, lineHeight: 1.1 }}>
-            {fmt(totalKgGeral)} kg
-          </div>
-          <div style={{ fontFamily: S.fonts.body, fontSize: 12, opacity: 0.85 }}>
-            Total pescado no campeonato (masculino + feminino, todas as etapas)
-          </div>
-        </div>
-      </div>
+  useEffect(() => {
+    setSelecionadoId(null);
+  }, [catAtual]);
 
-      <div style={{ marginBottom: 16 }}>
-        <CatSwitch cat={catAtual} setCat={setCatAtual} />
-      </div>
+  const selecionado = linhas.find((l) => l.pescador.id === selecionadoId) || linhas[0] || null;
 
-      {linhas.length === 0 ? (
-        <div style={S.emptyNote}>Nenhum resultado lançado ainda para {CATS[catAtual].label}.</div>
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={S.table}>
-            <thead>
-              <tr>
-                <th style={S.th}>Pos.</th>
-                <th style={S.th}>Pescador(a)</th>
-                {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => (
-                  <th key={n} style={{ ...S.th, textAlign: "center" }}>E{n}</th>
-                ))}
-                <th style={{ ...S.th, textAlign: "right" }}>Descarte</th>
-                <th style={{ ...S.th, textAlign: "right" }}>Total</th>
-              </tr>
-            </thead>
-            <tbody>
-              {linhas.map((l) => {
-                const premiado = l.posicao <= topN;
-                return (
-                  <tr key={l.pescador.id} style={premiado ? { background: "rgba(232,184,0,0.10)" } : {}}>
-                    <td style={S.td}>
-                      <PosicaoBadge pos={l.posicao} />
-                    </td>
-                    <td style={{ ...S.td, fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep }}>
-                      {l.pescador.nome}
-                      {premiado && <Trophy size={13} color="#E8B800" style={{ marginLeft: 6, verticalAlign: -2 }} />}
-                    </td>
-                    {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => {
-                      const pts = l.etapaPontos[n];
-                      const isDescarte = pts !== undefined && pts === l.descartada && l.nEtapas >= 2;
-                      return (
-                        <td key={n} style={{ ...S.td, textAlign: "center", fontSize: 12.5, color: isDescarte ? "#c04a4a" : "#5b6b6f", textDecoration: isDescarte ? "line-through" : "none" }}>
-                          {pts !== undefined ? fmtPts(pts).split(",")[0] : "—"}
-                        </td>
-                      );
-                    })}
-                    <td style={{ ...S.td, textAlign: "right", fontSize: 12, color: "#c04a4a" }}>
-                      {l.descartada !== null ? `−${fmtPts(l.descartada)}` : "—"}
-                    </td>
-                    <td style={{ ...S.td, textAlign: "right", fontFamily: S.fonts.body, fontWeight: 800, color: CATS[catAtual].color, fontSize: 14.5 }}>
-                      {fmtPts(l.total)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ================= EVOLUÇÃO POR ETAPA ================= */
-
-const CHART_COLORS = ["#0B5E22", "#E8B800", "#1B7FB8", "#C0453F", "#7A4FB5", "#D97A2B", "#3F9E8C", "#B5651D", "#5B6B6F", "#C74E8B"];
-
-function EvolucaoTab({ catAtual, setCatAtual, pescadores, etapas, classificacaoGeral, rankingEtapa }) {
-  const [metrica, setMetrica] = useState("peso"); // "peso" | "pontos"
-
-  const ordenados = useMemo(() => {
-    const posPorId = {};
-    classificacaoGeral.forEach((l) => (posPorId[l.pescador.id] = l.posicao));
-    return [...pescadores].sort((a, b) => (posPorId[a.id] || 999) - (posPorId[b.id] || 999));
-  }, [pescadores, classificacaoGeral]);
-
-  const [selecionados, setSelecionados] = useState(null);
-  const idsPadrao = useMemo(() => new Set(ordenados.slice(0, 5).map((p) => p.id)), [ordenados]);
-  const ativos = selecionados || idsPadrao;
-
-  function toggle(id) {
-    const atual = new Set(selecionados || idsPadrao);
-    if (atual.has(id)) atual.delete(id);
-    else atual.add(id);
-    setSelecionados(atual);
-  }
-
-  const chartData = useMemo(() => {
-    const porEtapa = [];
-    for (let et = 1; et <= N_ETAPAS; et++) {
-      const rk = rankingEtapa(et, catAtual);
-      const mapa = {};
-      rk.forEach((r) => {
-        mapa[r.pescador.id] = metrica === "peso" ? r.peso : r.pontos;
-      });
-      const ponto = { etapa: `E${et}` };
-      ordenados.forEach((p) => {
-        if (ativos.has(p.id)) ponto[p.nome] = mapa[p.id] !== undefined ? mapa[p.id] : null;
-      });
-      porEtapa.push(ponto);
-    }
-    return porEtapa;
-  }, [etapas, catAtual, metrica, ordenados, ativos]);
-
-  return (
-    <div style={S.card}>
-      <SectionTitle icon={TrendingUp} title="Evolução por Etapa" subtitle="Acompanhe o desempenho de cada pescador(a) ao longo do campeonato." />
-
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-        <CatSwitch cat={catAtual} setCat={setCatAtual} />
-        <div style={S.catSwitch}>
-          {[
-            { id: "peso", label: "Peso (kg)" },
-            { id: "pontos", label: "Pontos COSAPYL" },
-          ].map((m) => {
-            const active = metrica === m.id;
-            return (
-              <button
-                key={m.id}
-                onClick={() => setMetrica(m.id)}
-                style={{ ...S.catBtn, background: active ? S.colors.deep : "transparent", color: active ? "#fff" : S.colors.deep }}
-              >
-                {m.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {ordenados.length === 0 ? (
-        <div style={S.emptyNote}>Nenhum pescador(a) cadastrado em {CATS[catAtual].label} ainda.</div>
-      ) : (
-        <>
-          <div style={{ width: "100%", height: 340, marginBottom: 18 }}>
-            <ResponsiveContainer>
-              <LineChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#EDE8D9" />
-                <XAxis dataKey="etapa" tick={{ fontSize: 12.5, fontFamily: "Inter" }} stroke="#8a9b9e" />
-                <YAxis tick={{ fontSize: 12.5, fontFamily: "Inter" }} stroke="#8a9b9e" />
-                <Tooltip
-                  formatter={(value) => (value === null || value === undefined ? "—" : metrica === "peso" ? `${fmt(value)} kg` : fmtPts(value))}
-                  contentStyle={{ fontFamily: "Inter", fontSize: 12.5, borderRadius: 8, border: "1px solid #EDE8D9" }}
-                />
-                <Legend wrapperStyle={{ fontFamily: "Inter", fontSize: 12.5 }} />
-                {ordenados
-                  .map((p, idx) => ({ p, idx }))
-                  .filter(({ p }) => ativos.has(p.id))
-                  .map(({ p, idx }) => (
-                    <Line
-                      key={p.id}
-                      type="monotone"
-                      dataKey={p.nome}
-                      stroke={CHART_COLORS[idx % CHART_COLORS.length]}
-                      strokeWidth={2.5}
-                      dot={{ r: 3.5 }}
-                      connectNulls
-                    />
-                  ))}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-
-          <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, fontWeight: 700, color: S.colors.deep, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3 }}>
-            Mostrar no gráfico
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px" }}>
-            {ordenados.map((p, idx) => {
-              const on = ativos.has(p.id);
-              return (
-                <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: S.fonts.body, fontSize: 13, color: on ? S.colors.deep : "#9aa5ae", cursor: "pointer" }}>
-                  <input type="checkbox" checked={on} onChange={() => toggle(p.id)} />
-                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: on ? CHART_COLORS[idx % CHART_COLORS.length] : "#D9D3C2", display: "inline-block" }} />
-                  {p.nome}
-                </label>
-              );
-            })}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/* ================= PRÊMIOS ================= */
-
-function PremiosTab({ catAtual, setCatAtual, premios, etapas, pescadores, rankingEtapa }) {
   return (
     <div>
       <div style={S.card}>
-        <SectionTitle icon={Award} title="Prêmios Especiais da Temporada" subtitle="Considera todas as etapas — inclusive a que for descartada da pontuação geral." />
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
+          <SectionTitle icon={Trophy} title="Classificação Geral do Campeonato" subtitle={`Soma dos pontos das ${N_ETAPAS} etapas, descartando a de menor pontuação. Top ${topN} recebem troféu e material de pesca.`} />
+          {linhas.length > 0 && (
+            <button onClick={() => exportarClassificacaoPDF(catAtual, linhas, topN)} style={S.btnGhost}>
+              <FileDown size={15} style={{ marginRight: 6 }} /> Baixar PDF
+            </button>
+          )}
+        </div>
+
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 12,
+            background: "linear-gradient(135deg, #0B5E22, #0d7a2c)",
+            borderRadius: 12, padding: "14px 18px", marginBottom: 18, color: "#fff",
+          }}
+        >
+          <div style={{ width: 38, height: 38, borderRadius: 10, background: "rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <Weight size={19} color="#fff" />
+          </div>
+          <div>
+            <div style={{ fontFamily: S.fonts.display, fontSize: 20, fontWeight: 700, lineHeight: 1.1 }}>
+              {fmt(totalKgGeral)} kg
+            </div>
+            <div style={{ fontFamily: S.fonts.body, fontSize: 12, opacity: 0.85 }}>
+              Total pescado no campeonato (masculino + feminino, todas as etapas)
+            </div>
+          </div>
+        </div>
+
         <div style={{ marginBottom: 16 }}>
           <CatSwitch cat={catAtual} setCat={setCatAtual} />
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px,1fr))", gap: 12 }}>
-          <PremioCard label="Maior Peixe da Temporada" icon={Fish} valor={premios?.maiorPeixe ? `${fmt(premios.maiorPeixe.maiorPeixeTemp)} kg` : "—"} nome={premios?.maiorPeixe?.pescador?.nome} cor={CATS[catAtual].color} />
-          <PremioCard label="Maior Quantidade de Peixes" icon={Anchor} valor={premios?.maiorQtd ? `${premios.maiorQtd.qtdTemp} peixes` : "—"} nome={premios?.maiorQtd?.pescador?.nome} cor={CATS[catAtual].color} />
-          <PremioCard label="Maior Papa-terra (Betara)" icon={Trophy} valor={premios?.maiorPapaTerra ? `${fmt(premios.maiorPapaTerra.papaTerraTemp)} kg` : "—"} nome={premios?.maiorPapaTerra?.pescador?.nome} cor={CATS[catAtual].color} />
+      </div>
+
+      {linhas.length === 0 ? (
+        <div style={{ ...S.card, marginTop: 14 }}>
+          <div style={S.emptyNote}>Nenhum resultado lançado ainda para {CATS[catAtual].label}.</div>
         </div>
-      </div>
-
-      <div style={{ ...S.card, marginTop: 16 }}>
-        <SectionTitle icon={Medal} title="Pódios por Etapa" subtitle={`1º Troféu · 2º e 3º Medalha — ${CATS[catAtual].label}`} />
-        <div style={{ display: "grid", gap: 14 }}>
-          {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => {
-            const rk = rankingEtapa(n, catAtual).slice(0, 3);
-            return (
-              <div key={n} style={S.podiumRow}>
-                <div style={{ fontFamily: S.fonts.body, fontWeight: 700, fontSize: 13, color: S.colors.deep, minWidth: 68 }}>Etapa {n}</div>
-                {rk.length === 0 ? (
-                  <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: "#9aa5ae" }}>sem resultados</span>
-                ) : (
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    {rk.map((r) => (
-                      <div key={r.pescador.id} style={S.podiumPill}>
-                        <PosicaoBadge pos={r.pos} />
-                        <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: S.colors.deep, fontWeight: 600 }}>{r.pescador.nome}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function PremioCard({ label, icon: Icon, valor, nome, cor }) {
-  return (
-    <div style={S.premioCard}>
-      <div style={{ ...S.premioIcon, background: cor }}>
-        <Icon size={18} color="#fff" />
-      </div>
-      <div style={{ fontFamily: S.fonts.body, fontSize: 11.5, letterSpacing: 0.3, color: "#7c8a8e", textTransform: "uppercase", marginTop: 10 }}>{label}</div>
-      <div style={{ fontFamily: S.fonts.display, fontSize: 21, color: S.colors.deep, marginTop: 3 }}>{valor}</div>
-      <div style={{ fontFamily: S.fonts.body, fontSize: 13, color: cor, fontWeight: 700, marginTop: 2 }}>{nome || "—"}</div>
-    </div>
-  );
-}
-
-/* ================= misc ================= */
-
-function SectionTitle({ icon: Icon, title, subtitle }) {
-  return (
-    <div style={{ marginBottom: 18, display: "flex", gap: 10, alignItems: "flex-start" }}>
-      <div style={{ width: 32, height: 32, borderRadius: 8, background: "#EEF2E9", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 2 }}>
-        <Icon size={16} color={S.colors.deep} />
-      </div>
-      <div>
-        <div style={{ fontFamily: S.fonts.display, fontSize: 18, color: S.colors.deep }}>{title}</div>
-        {subtitle && <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, color: "#7c8a8e", marginTop: 2, maxWidth: 620 }}>{subtitle}</div>}
-      </div>
-    </div>
-  );
-}
-
-/* ================= STYLE TOKENS ================= */
-
-const S = {
-  colors: {
-    deep: "#0B5E22",
-    teal: "#0068B3",
-    sand: "#F0E6D2",
-    cream: "#F7F3E8",
-    gold: "#E8B800",
-    coral: "#C98A00",
-  },
-  fonts: {
-    display: "'Fraunces', 'Georgia', serif",
-    body: "'Inter', system-ui, sans-serif",
-  },
-  page: { background: "#F5F1E6", minHeight: "100%", fontFamily: "'Inter', system-ui, sans-serif" },
-  header: { background: "linear-gradient(135deg, #0B5E22 0%, #0A7A3E 70%, #0068B3 100%)", overflow: "hidden", position: "relative" },
-  logoCircle: { width: 54, height: 54, borderRadius: "50%", background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 2px 8px rgba(0,0,0,0.28)", padding: 4, border: "2px solid rgba(232,184,0,0.55)" },
-  tabsWrap: { background: "#0B5E22", borderTop: "1px solid rgba(255,255,255,0.08)" },
-  tabBtn: {
-    fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13, fontWeight: 600, color: "rgba(240,236,224,0.6)",
-    background: "transparent", border: "none", padding: "12px 14px", cursor: "pointer", display: "flex", alignItems: "center",
-    borderBottom: "2px solid transparent", whiteSpace: "nowrap",
-  },
-  tabBtnActive: { color: "#F7F3E8", borderBottom: "2px solid #E8B800" },
-  card: { background: "#fff", borderRadius: 14, padding: "22px 20px", marginTop: 20, boxShadow: "0 1px 3px rgba(13,59,74,0.08), 0 1px 2px rgba(13,59,74,0.06)", border: "1px solid #EDE8D9" },
-  input: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 14, padding: "10px 12px", borderRadius: 8, border: "1px solid #DDD6C3", outline: "none", background: "#FBF9F2" },
-  btnPrimary: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13.5, fontWeight: 700, color: "#fff", background: "#0B5E22", border: "none", borderRadius: 8, padding: "10px 16px", cursor: "pointer", display: "flex", alignItems: "center" },
-  catHeading: { fontFamily: "'Fraunces', serif", fontSize: 15, fontWeight: 600, marginBottom: 8 },
-  rowItem: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", background: "#FBF9F2", borderRadius: 8, border: "1px solid #EDE8D9" },
-  iconBtnGhost: { background: "transparent", border: "none", color: "#B5651D", cursor: "pointer", padding: 4, display: "flex" },
-  emptyNote: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13.5, color: "#9aa5ae", fontStyle: "italic", padding: "10px 0" },
-  catSwitch: { display: "inline-flex", background: "#EFEAD8", borderRadius: 8, padding: 3, gap: 3 },
-  catBtn: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 12.5, fontWeight: 700, border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer" },
-  etapaChip: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 12.5, fontWeight: 600, color: "#0B5E22", background: "#FBF9F2", border: "1px solid #DDD6C3", borderRadius: 999, padding: "6px 12px", cursor: "pointer" },
-  etapaChipActive: { background: "#0B5E22", color: "#fff", borderColor: "#0B5E22" },
-  table: { width: "100%", borderCollapse: "collapse", minWidth: 640 },
-  th: { textAlign: "left", fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: "#7c8a8e", padding: "8px 10px", borderBottom: "2px solid #EDE8D9" },
-  td: { padding: "8px 10px", borderBottom: "1px solid #F2EEDF", verticalAlign: "middle" },
-  cellInput: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13, padding: "6px 8px", borderRadius: 6, border: "1px solid #DDD6C3", width: 90, outline: "none" },
-  rankRow: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", borderRadius: 8, background: "#FBF9F2" },
-  rankRowTop: { background: "rgba(232,184,0,0.09)" },
-  posBadge: { width: 26, height: 26, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11.5, fontWeight: 800, color: "#0B5E22", flexShrink: 0 },
-  premioCard: { background: "#FBF9F2", border: "1px solid #EDE8D9", borderRadius: 12, padding: "16px 16px 18px", textAlign: "center" },
-  premioIcon: { width: 38, height: 38, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" },
-  podiumRow: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", borderBottom: "1px solid #F2EEDF", paddingBottom: 12 },
-  podiumPill: { display: "flex", alignItems: "center", gap: 6, background: "#FBF9F2", border: "1px solid #EDE8D9", borderRadius: 999, padding: "4px 10px 4px 4px" },
-  toast: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "#0B5E22", color: "#F7F3E8", padding: "10px 18px", borderRadius: 999, fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 4px 14px rgba(0,0,0,0.25)" },
-  lockBtn: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11.5, fontWeight: 700, color: "#F7F3E8", background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.28)", borderRadius: 999, padding: "5px 11px", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 },
-  lockBtnActive: { background: "#E8B800", color: "#0B5E22", border: "1px solid #E8B800" },
-  modalOverlay: { position: "fixed", inset: 0, background: "rgba(11,59,34,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 },
-  modalCard: { background: "#fff", borderRadius: 16, padding: "26px 24px 22px", width: "100%", maxWidth: 340, position: "relative", boxShadow: "0 12px 40px rgba(0,0,0,0.3)" },
-  modalClose: { position: "absolute", top: 12, right: 12, background: "#FBF9F2", border: "1px solid #EDE8D9", borderRadius: "50%", width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#7c8a8e" },
-};
-
-const CSS = `
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700;800&display=swap');
-.animate-spin { animation: spin 1s linear infinite; }
-@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
-input[type=number]::-webkit-inner-spin-button { opacity: 0.4; }
-table { font-family: 'Inter', system-ui, sans-serif; }
-`;
+      ) : (
+        <div className="classif-grid" style={{ marginTop: 14 }}>
+          <div style={{ ...S.card, overflowX: "auto" }}>
+            <div style={{ fontFamily: S.fonts.body, fontSize: 12, color: "#8a9b9e", marginBottom: 8 }}>
+              Toque em um pescador(a) na lista para ver o detalhamento completo ao lado.
+            </div>
+            <table style={S.table}>
+              <thead>
