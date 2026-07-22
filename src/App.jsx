@@ -925,3 +925,580 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral }) {
             </div>
             <table style={S.table}>
               <thead>
+                <tr>
+                  <th style={S.th}>Pos.</th>
+                  <th style={S.th}></th>
+                  <th style={S.th}>Pescador(a)</th>
+                  {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => (
+                    <th key={n} style={{ ...S.th, textAlign: "center" }}>E{n}</th>
+                  ))}
+                  <th style={{ ...S.th, textAlign: "right" }}>Descarte</th>
+                  <th style={{ ...S.th, textAlign: "right" }}>Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {linhas.map((l) => {
+                  const premiado = l.posicao <= topN;
+                  const ativo = selecionado && selecionado.pescador.id === l.pescador.id;
+                  return (
+                    <tr
+                      key={l.pescador.id}
+                      onClick={() => setSelecionadoId(l.pescador.id)}
+                      style={{ cursor: "pointer", background: ativo ? "rgba(11,94,34,0.08)" : premiado ? "rgba(232,184,0,0.10)" : "transparent" }}
+                    >
+                      <td style={S.td}>
+                        <PosicaoBadge pos={l.posicao} />
+                      </td>
+                      <td style={{ ...S.td, textAlign: "center" }}>
+                        <Avatar foto={l.pescador.foto} nome={l.pescador.nome} size={26} cor={CATS[catAtual].color} />
+                      </td>
+                      <td style={{ ...S.td, fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep }}>
+                        {l.pescador.nome}
+                        {premiado && <Trophy size={13} color="#E8B800" style={{ marginLeft: 6, verticalAlign: -2 }} />}
+                      </td>
+                      {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => {
+                        const pts = l.etapaPontos[n];
+                        const isDescarte = pts !== undefined && pts === l.descartada && l.nEtapas >= 2;
+                        return (
+                          <td key={n} style={{ ...S.td, textAlign: "center", fontSize: 12.5, color: isDescarte ? "#c04a4a" : "#5b6b6f", textDecoration: isDescarte ? "line-through" : "none" }}>
+                            {pts !== undefined ? fmtPts(pts).split(",")[0] : "—"}
+                          </td>
+                        );
+                      })}
+                      <td style={{ ...S.td, textAlign: "right", fontSize: 12, color: "#c04a4a" }}>
+                        {l.descartada !== null ? `−${fmtPts(l.descartada)}` : "—"}
+                      </td>
+                      <td style={{ ...S.td, textAlign: "right", fontFamily: S.fonts.body, fontWeight: 800, color: CATS[catAtual].color, fontSize: 14.5 }}>
+                        {fmtPts(l.total)}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          {selecionado && <PescadorSpotlight linha={selecionado} cat={catAtual} topN={topN} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ================= PAINEL DE DESTAQUE DO PESCADOR ================= */
+
+function PescadorSpotlight({ linha, cat, topN }) {
+  const etapasNums = Array.from({ length: N_ETAPAS }, (_, i) => i + 1);
+  const mediaPorPeixe = linha.qtdTemp > 0 ? (linha.pesoTemp || 0) / linha.qtdTemp : 0;
+  const premiado = linha.posicao <= topN;
+
+  const chartData = etapasNums.map((n) => ({
+    etapa: `E${n}`,
+    pontos: linha.etapaDetalhe[n] ? linha.etapaDetalhe[n].pontos : null,
+  }));
+
+  return (
+    <div style={S.card}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <Avatar foto={linha.pescador.foto} nome={linha.pescador.nome} size={56} cor={CATS[cat].color} />
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontFamily: S.fonts.display, fontSize: 21, fontWeight: 700, color: S.colors.deep }}>{linha.pescador.nome}</span>
+            {premiado && <Trophy size={17} color="#E8B800" />}
+          </div>
+          <div style={{ marginTop: 3 }}>
+            {premiado ? (
+              <span style={{ ...S.badgePill, background: "rgba(232,184,0,0.15)", color: "#8a6a00" }}>{linha.posicao}º Lugar Geral</span>
+            ) : (
+              <span style={{ ...S.badgePill, background: "#F2EEDF", color: "#5b6b6f" }}>{linha.posicao}º Lugar Geral</span>
+            )}
+          </div>
+          <div style={{ fontFamily: S.fonts.body, fontSize: 12, color: "#8a9b9e", marginTop: 4 }}>Categoria: {CATS[cat].label}</div>
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 }}>
+        <MiniStat label="Total de Peixes" valor={`${fmtInt(linha.qtdTemp || 0)} peixes`} />
+        <MiniStat label="Peso Total" valor={`${fmt(linha.pesoTemp || 0)} kg`} />
+        <MiniStat label="Média por Peixe" valor={`${fmt(mediaPorPeixe)} kg`} />
+        <MiniStat label="Maior Peixe" valor={linha.maiorPeixeTemp > 0 ? `${fmt(linha.maiorPeixeTemp)} kg` : "—"} />
+      </div>
+
+      <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, fontWeight: 700, color: S.colors.deep, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3 }}>
+        Desempenho por Etapa
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8 }}>
+        {etapasNums.map((n) => {
+          const d = linha.etapaDetalhe[n];
+          const isDescarte = d && d.pontos === linha.descartada && linha.nEtapas >= 2;
+          return (
+            <div
+              key={n}
+              style={{
+                background: "#FBF9F2", borderRadius: 10, padding: "8px 10px", textAlign: "center",
+                border: isDescarte ? "1px solid #E3A9A5" : "1px solid #EDE8D9",
+              }}
+            >
+              <div style={{ fontFamily: S.fonts.body, fontSize: 11, fontWeight: 700, color: "#8a9b9e" }}>E{n}</div>
+              {!d ? (
+                <div style={{ fontFamily: S.fonts.body, fontSize: 11, color: "#b7bfc2", marginTop: 6 }}>Não realizada</div>
+              ) : (
+                <>
+                  <div style={{ fontFamily: S.fonts.display, fontSize: 15.5, fontWeight: 700, color: isDescarte ? "#c04a4a" : S.colors.deep }}>
+                    {fmtPts(d.pontos).split(",")[0]}<span style={{ fontSize: 10, fontWeight: 600 }}>pts</span>
+                  </div>
+                  <div style={{ fontFamily: S.fonts.body, fontSize: 10.5, color: "#8a9b9e" }}>{fmtInt(d.quantidade)} peixes</div>
+                  <div style={{ fontFamily: S.fonts.body, fontSize: 10.5, color: "#8a9b9e" }}>{fmt(d.peso)} kg</div>
+                  <div style={{ marginTop: 4 }}>
+                    <span style={{ fontFamily: S.fonts.body, fontSize: 10, fontWeight: 700, color: isDescarte ? "#c04a4a" : CATS[cat].color }}>
+                      {d.pos}º lugar
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ fontFamily: S.fonts.body, fontSize: 10.5, color: "#9aa5ae", marginBottom: 18 }}>
+        * A menor pontuação é descartada no cálculo do total.
+      </div>
+
+      <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, fontWeight: 700, color: S.colors.deep, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3 }}>
+        Evolução de Pontos
+      </div>
+      <div style={{ width: "100%", height: 190 }}>
+        <ResponsiveContainer>
+          <LineChart data={chartData} margin={{ top: 8, right: 10, left: -18, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#EDE8D9" />
+            <XAxis dataKey="etapa" tick={{ fontSize: 11.5, fontFamily: "Inter" }} stroke="#8a9b9e" />
+            <YAxis tick={{ fontSize: 11.5, fontFamily: "Inter" }} stroke="#8a9b9e" domain={[0, 100]} />
+            <Tooltip
+              formatter={(value) => (value === null || value === undefined ? "—" : fmtPts(value))}
+              contentStyle={{ fontFamily: "Inter", fontSize: 12, borderRadius: 8, border: "1px solid #EDE8D9" }}
+            />
+            <Line type="monotone" dataKey="pontos" name="Pontuação" stroke={CATS[cat].color} strokeWidth={2.5} dot={{ r: 3.5 }} connectNulls />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </div>
+  );
+}
+
+/* ================= EXPORTAÇÃO EM PDF ================= */
+
+function pdfCabecalho(doc, titulo, subtitulo) {
+  doc.setFillColor(11, 94, 34);
+  doc.rect(0, 0, doc.internal.pageSize.getWidth(), 26, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.text("APEP 2026 — Associação de Pesca Esportiva Potiguar", 14, 11);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10.5);
+  doc.text(titulo, 14, 19);
+  doc.setTextColor(40, 40, 40);
+  doc.setFontSize(9.5);
+  doc.text(subtitulo, 14, 33);
+  doc.text(`Gerado em ${new Date().toLocaleString("pt-BR")}`, doc.internal.pageSize.getWidth() - 14, 33, { align: "right" });
+}
+
+function exportarClassificacaoPDF(cat, linhas, topN) {
+  const doc = new jsPDF({ orientation: "landscape" });
+  pdfCabecalho(doc, `Classificação Geral — ${CATS[cat].label}`, `Soma dos pontos das ${N_ETAPAS} etapas, descartando a de menor pontuação. Top ${topN} recebem premiação.`);
+
+  const cols = ["Pos.", "Pescador(a)", ...Array.from({ length: N_ETAPAS }, (_, i) => `E${i + 1}`), "Descarte", "Total"];
+  const rows = linhas.map((l) => [
+    `${l.posicao}º`,
+    l.pescador.nome,
+    ...Array.from({ length: N_ETAPAS }, (_, i) => {
+      const pts = l.etapaPontos[i + 1];
+      return pts !== undefined ? fmtPts(pts) : "—";
+    }),
+    l.descartada !== null ? `−${fmtPts(l.descartada)}` : "—",
+    fmtPts(l.total),
+  ]);
+
+  autoTable(doc, {
+    startY: 38,
+    head: [cols],
+    body: rows,
+    theme: "striped",
+    headStyles: { fillColor: [11, 94, 34], fontSize: 8.5 },
+    styles: { fontSize: 8.5, cellPadding: 2.5 },
+    didParseCell: (data) => {
+      if (data.row.index < topN && data.column.index === 0) {
+        data.cell.styles.textColor = [200, 150, 0];
+        data.cell.styles.fontStyle = "bold";
+      }
+    },
+  });
+
+  doc.save(`APEP2026_classificacao_${CATS[cat].label.toLowerCase()}.pdf`);
+}
+
+function exportarEtapaPDF(etapa, cat, ranking) {
+  const doc = new jsPDF();
+  pdfCabecalho(doc, `Resultado da Etapa ${etapa} — ${CATS[cat].label}`, "Classificação pelo peso total e pontuação COSAPYL da etapa.");
+
+  const rows = ranking.map((r, idx) => [
+    `${idx + 1}º`,
+    r.pescador.nome,
+    fmt(r.peso),
+    fmtInt(r.quantidade),
+    r.peixesExoticos ? fmtInt(r.peixesExoticos) : "0",
+    r.maiorPeixe > 0 ? fmt(r.maiorPeixe) : "—",
+    fmtPts(r.pontos),
+  ]);
+
+  autoTable(doc, {
+    startY: 38,
+    head: [["Pos.", "Pescador(a)", "Peso (kg)", "Qtd. peixes", "Peixes exóticos", "Maior peixe (kg)", "Pontos COSAPYL"]],
+    body: rows,
+    theme: "striped",
+    headStyles: { fillColor: [11, 94, 34], fontSize: 9 },
+    styles: { fontSize: 9, cellPadding: 3 },
+  });
+
+  doc.save(`APEP2026_etapa${etapa}_${CATS[cat].label.toLowerCase()}.pdf`);
+}
+
+
+
+function DetalhePescador({ linha }) {
+  const etapasNums = Array.from({ length: N_ETAPAS }, (_, i) => i + 1);
+  const pescouEm = etapasNums.filter((n) => linha.etapaDetalhe[n]);
+
+  return (
+    <div style={{ background: "#FBF9F2", padding: "16px 20px 20px" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
+        <MiniStat label="Peso total (todas etapas)" valor={`${fmt(linha.pesoTemp || 0)} kg`} />
+        <MiniStat label="Total de peixes pescados" valor={`${fmtInt(linha.qtdTemp || 0)} un.`} />
+        <MiniStat label="Maior peixe da temporada" valor={linha.maiorPeixeTemp > 0 ? `${fmt(linha.maiorPeixeTemp)} kg` : "—"} />
+        <MiniStat label="Etapas com pesagem" valor={`${pescouEm.length} de ${N_ETAPAS}`} />
+      </div>
+
+      <table style={{ ...S.table, background: "#fff" }}>
+        <thead>
+          <tr>
+            <th style={S.th}>Etapa</th>
+            <th style={{ ...S.th, textAlign: "center" }}>Adimplente</th>
+            <th style={{ ...S.th, textAlign: "center" }}>Peso (kg)</th>
+            <th style={{ ...S.th, textAlign: "center" }}>Qtd. peixes</th>
+            <th style={{ ...S.th, textAlign: "center" }}>Peixes exóticos</th>
+            <th style={{ ...S.th, textAlign: "center" }}>Maior peixe (kg)</th>
+            <th style={{ ...S.th, textAlign: "center" }}>Papa-terra (kg)</th>
+            <th style={{ ...S.th, textAlign: "center" }}>Posição</th>
+            <th style={{ ...S.th, textAlign: "right" }}>Pontos</th>
+          </tr>
+        </thead>
+        <tbody>
+          {etapasNums.map((n) => {
+            const d = linha.etapaDetalhe[n];
+            const isDescarte = d && d.pontos === linha.descartada && linha.nEtapas >= 2;
+            return (
+              <tr key={n}>
+                <td style={{ ...S.td, fontWeight: 600, color: S.colors.deep }}>Etapa {n}</td>
+                {!d ? (
+                  <td colSpan={8} style={{ ...S.td, textAlign: "center", color: "#9aa5ae" }}>Não pescou nessa etapa</td>
+                ) : (
+                  <>
+                    <td style={{ ...S.td, textAlign: "center" }}>{d.adimplente ? "Sim" : "Não"}</td>
+                    <td style={{ ...S.td, textAlign: "center" }}>{fmt(d.peso)}</td>
+                    <td style={{ ...S.td, textAlign: "center" }}>{fmtInt(d.quantidade)}</td>
+                    <td style={{ ...S.td, textAlign: "center" }}>{fmtInt(d.peixesExoticos)}</td>
+                    <td style={{ ...S.td, textAlign: "center" }}>{d.maiorPeixe > 0 ? fmt(d.maiorPeixe) : "—"}</td>
+                    <td style={{ ...S.td, textAlign: "center" }}>{d.papaTerra ? fmt(d.papaTerraPeso) : "—"}</td>
+                    <td style={{ ...S.td, textAlign: "center" }}>{d.pos}º</td>
+                    <td style={{ ...S.td, textAlign: "right", fontWeight: 700, color: isDescarte ? "#c04a4a" : S.colors.deep, textDecoration: isDescarte ? "line-through" : "none" }}>
+                      {fmtPts(d.pontos)}
+                    </td>
+                  </>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {linha.nEtapas >= 2 && (
+        <div style={{ fontFamily: S.fonts.body, fontSize: 11.5, color: "#8a9b9e", marginTop: 8 }}>
+          A etapa riscada em vermelho foi descartada no cálculo do total (menor pontuação da temporada).
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MiniStat({ label, valor }) {
+  return (
+    <div style={{ background: "#fff", border: "1px solid #EDE8D9", borderRadius: 10, padding: "8px 14px", minWidth: 150 }}>
+      <div style={{ fontFamily: S.fonts.body, fontSize: 10.5, fontWeight: 700, color: "#8a9b9e", textTransform: "uppercase", letterSpacing: 0.3 }}>{label}</div>
+      <div style={{ fontFamily: S.fonts.display, fontSize: 17, fontWeight: 700, color: S.colors.deep }}>{valor}</div>
+    </div>
+  );
+}
+
+/* ================= EVOLUÇÃO POR ETAPA ================= */
+
+const CHART_COLORS = ["#0B5E22", "#E8B800", "#1B7FB8", "#C0453F", "#7A4FB5", "#D97A2B", "#3F9E8C", "#B5651D", "#5B6B6F", "#C74E8B"];
+
+function EvolucaoTab({ catAtual, setCatAtual, pescadores, etapas, classificacaoGeral, rankingEtapa }) {
+  const [metrica, setMetrica] = useState("peso"); // "peso" | "pontos"
+
+  const ordenados = useMemo(() => {
+    const posPorId = {};
+    classificacaoGeral.forEach((l) => (posPorId[l.pescador.id] = l.posicao));
+    return [...pescadores].sort((a, b) => (posPorId[a.id] || 999) - (posPorId[b.id] || 999));
+  }, [pescadores, classificacaoGeral]);
+
+  const [selecionados, setSelecionados] = useState(null);
+  const idsPadrao = useMemo(() => new Set(ordenados.slice(0, 5).map((p) => p.id)), [ordenados]);
+  const ativos = selecionados || idsPadrao;
+
+  function toggle(id) {
+    const atual = new Set(selecionados || idsPadrao);
+    if (atual.has(id)) atual.delete(id);
+    else atual.add(id);
+    setSelecionados(atual);
+  }
+
+  const chartData = useMemo(() => {
+    const porEtapa = [];
+    for (let et = 1; et <= N_ETAPAS; et++) {
+      const rk = rankingEtapa(et, catAtual);
+      const mapa = {};
+      rk.forEach((r) => {
+        mapa[r.pescador.id] = metrica === "peso" ? r.peso : r.pontos;
+      });
+      const ponto = { etapa: `E${et}` };
+      ordenados.forEach((p) => {
+        if (ativos.has(p.id)) ponto[p.nome] = mapa[p.id] !== undefined ? mapa[p.id] : null;
+      });
+      porEtapa.push(ponto);
+    }
+    return porEtapa;
+  }, [etapas, catAtual, metrica, ordenados, ativos]);
+
+  return (
+    <div style={S.card}>
+      <SectionTitle icon={TrendingUp} title="Evolução por Etapa" subtitle="Acompanhe o desempenho de cada pescador(a) ao longo do campeonato." />
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+        <CatSwitch cat={catAtual} setCat={setCatAtual} />
+        <div style={S.catSwitch}>
+          {[
+            { id: "peso", label: "Peso (kg)" },
+            { id: "pontos", label: "Pontos COSAPYL" },
+          ].map((m) => {
+            const active = metrica === m.id;
+            return (
+              <button
+                key={m.id}
+                onClick={() => setMetrica(m.id)}
+                style={{ ...S.catBtn, background: active ? S.colors.deep : "transparent", color: active ? "#fff" : S.colors.deep }}
+              >
+                {m.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {ordenados.length === 0 ? (
+        <div style={S.emptyNote}>Nenhum pescador(a) cadastrado em {CATS[catAtual].label} ainda.</div>
+      ) : (
+        <>
+          <div style={{ width: "100%", height: 340, marginBottom: 18 }}>
+            <ResponsiveContainer>
+              <LineChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#EDE8D9" />
+                <XAxis dataKey="etapa" tick={{ fontSize: 12.5, fontFamily: "Inter" }} stroke="#8a9b9e" />
+                <YAxis tick={{ fontSize: 12.5, fontFamily: "Inter" }} stroke="#8a9b9e" />
+                <Tooltip
+                  formatter={(value) => (value === null || value === undefined ? "—" : metrica === "peso" ? `${fmt(value)} kg` : fmtPts(value))}
+                  contentStyle={{ fontFamily: "Inter", fontSize: 12.5, borderRadius: 8, border: "1px solid #EDE8D9" }}
+                />
+                <Legend wrapperStyle={{ fontFamily: "Inter", fontSize: 12.5 }} />
+                {ordenados
+                  .map((p, idx) => ({ p, idx }))
+                  .filter(({ p }) => ativos.has(p.id))
+                  .map(({ p, idx }) => (
+                    <Line
+                      key={p.id}
+                      type="monotone"
+                      dataKey={p.nome}
+                      stroke={CHART_COLORS[idx % CHART_COLORS.length]}
+                      strokeWidth={2.5}
+                      dot={{ r: 3.5 }}
+                      connectNulls
+                    />
+                  ))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+
+          <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, fontWeight: 700, color: S.colors.deep, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3 }}>
+            Mostrar no gráfico
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px" }}>
+            {ordenados.map((p, idx) => {
+              const on = ativos.has(p.id);
+              return (
+                <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: S.fonts.body, fontSize: 13, color: on ? S.colors.deep : "#9aa5ae", cursor: "pointer" }}>
+                  <input type="checkbox" checked={on} onChange={() => toggle(p.id)} />
+                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: on ? CHART_COLORS[idx % CHART_COLORS.length] : "#D9D3C2", display: "inline-block" }} />
+                  {p.nome}
+                </label>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ================= PRÊMIOS ================= */
+
+function PremiosTab({ catAtual, setCatAtual, premios, etapas, pescadores, rankingEtapa }) {
+  return (
+    <div>
+      <div style={S.card}>
+        <SectionTitle icon={Award} title="Prêmios Especiais da Temporada" subtitle="Considera todas as etapas — inclusive a que for descartada da pontuação geral." />
+        <div style={{ marginBottom: 16 }}>
+          <CatSwitch cat={catAtual} setCat={setCatAtual} />
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px,1fr))", gap: 12 }}>
+          <PremioCard label="Maior Peixe da Temporada" icon={Fish} valor={premios?.maiorPeixe ? `${fmt(premios.maiorPeixe.maiorPeixeTemp)} kg` : "—"} nome={premios?.maiorPeixe?.pescador?.nome} cor={CATS[catAtual].color} />
+          <PremioCard label="Maior Quantidade de Peixes" icon={Anchor} valor={premios?.maiorQtd ? `${premios.maiorQtd.qtdTemp} peixes` : "—"} nome={premios?.maiorQtd?.pescador?.nome} cor={CATS[catAtual].color} />
+          <PremioCard label="Maior Papa-terra (Betara)" icon={Trophy} valor={premios?.maiorPapaTerra ? `${fmt(premios.maiorPapaTerra.papaTerraTemp)} kg` : "—"} nome={premios?.maiorPapaTerra?.pescador?.nome} cor={CATS[catAtual].color} />
+        </div>
+      </div>
+
+      <div style={{ ...S.card, marginTop: 16 }}>
+        <SectionTitle icon={Medal} title="Pódios por Etapa" subtitle={`1º Troféu · 2º e 3º Medalha — ${CATS[catAtual].label}`} />
+        <div style={{ display: "grid", gap: 14 }}>
+          {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => {
+            const rk = rankingEtapa(n, catAtual).slice(0, 3);
+            return (
+              <div key={n} style={S.podiumRow}>
+                <div style={{ fontFamily: S.fonts.body, fontWeight: 700, fontSize: 13, color: S.colors.deep, minWidth: 68 }}>Etapa {n}</div>
+                {rk.length === 0 ? (
+                  <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: "#9aa5ae" }}>sem resultados</span>
+                ) : (
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    {rk.map((r) => (
+                      <div key={r.pescador.id} style={S.podiumPill}>
+                        <PosicaoBadge pos={r.pos} />
+                        <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: S.colors.deep, fontWeight: 600 }}>{r.pescador.nome}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PremioCard({ label, icon: Icon, valor, nome, cor }) {
+  return (
+    <div style={S.premioCard}>
+      <div style={{ ...S.premioIcon, background: cor }}>
+        <Icon size={18} color="#fff" />
+      </div>
+      <div style={{ fontFamily: S.fonts.body, fontSize: 11.5, letterSpacing: 0.3, color: "#7c8a8e", textTransform: "uppercase", marginTop: 10 }}>{label}</div>
+      <div style={{ fontFamily: S.fonts.display, fontSize: 21, color: S.colors.deep, marginTop: 3 }}>{valor}</div>
+      <div style={{ fontFamily: S.fonts.body, fontSize: 13, color: cor, fontWeight: 700, marginTop: 2 }}>{nome || "—"}</div>
+    </div>
+  );
+}
+
+/* ================= misc ================= */
+
+function SectionTitle({ icon: Icon, title, subtitle }) {
+  return (
+    <div style={{ marginBottom: 18, display: "flex", gap: 10, alignItems: "flex-start" }}>
+      <div style={{ width: 32, height: 32, borderRadius: 8, background: "#EEF2E9", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 2 }}>
+        <Icon size={16} color={S.colors.deep} />
+      </div>
+      <div>
+        <div style={{ fontFamily: S.fonts.display, fontSize: 18, color: S.colors.deep }}>{title}</div>
+        {subtitle && <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, color: "#7c8a8e", marginTop: 2, maxWidth: 620 }}>{subtitle}</div>}
+      </div>
+    </div>
+  );
+}
+
+/* ================= STYLE TOKENS ================= */
+
+const S = {
+  colors: {
+    deep: "#0B5E22",
+    teal: "#0068B3",
+    sand: "#F0E6D2",
+    cream: "#F7F3E8",
+    gold: "#E8B800",
+    coral: "#C98A00",
+  },
+  fonts: {
+    display: "'Fraunces', 'Georgia', serif",
+    body: "'Inter', system-ui, sans-serif",
+  },
+  page: { background: "#F5F1E6", minHeight: "100%", fontFamily: "'Inter', system-ui, sans-serif" },
+  header: { background: "linear-gradient(135deg, #0B5E22 0%, #0A7A3E 70%, #0068B3 100%)", overflow: "hidden", position: "relative" },
+  logoCircle: { width: 54, height: 54, borderRadius: "50%", background: "#FFFFFF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 2px 8px rgba(0,0,0,0.28)", padding: 4, border: "2px solid rgba(232,184,0,0.55)" },
+  tabsWrap: { background: "#0B5E22", borderTop: "1px solid rgba(255,255,255,0.08)" },
+  tabBtn: {
+    fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13, fontWeight: 600, color: "rgba(240,236,224,0.6)",
+    background: "transparent", border: "none", padding: "12px 14px", cursor: "pointer", display: "flex", alignItems: "center",
+    borderBottom: "2px solid transparent", whiteSpace: "nowrap",
+  },
+  tabBtnActive: { color: "#F7F3E8", borderBottom: "2px solid #E8B800" },
+  card: { background: "#fff", borderRadius: 14, padding: "22px 20px", marginTop: 20, boxShadow: "0 1px 3px rgba(13,59,74,0.08), 0 1px 2px rgba(13,59,74,0.06)", border: "1px solid #EDE8D9" },
+  input: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 14, padding: "10px 12px", borderRadius: 8, border: "1px solid #DDD6C3", outline: "none", background: "#FBF9F2" },
+  btnPrimary: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13.5, fontWeight: 700, color: "#fff", background: "#0B5E22", border: "none", borderRadius: 8, padding: "10px 16px", cursor: "pointer", display: "flex", alignItems: "center" },
+  btnGhost: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13, fontWeight: 700, color: "#0B5E22", background: "#fff", border: "1px solid #0B5E22", borderRadius: 8, padding: "8px 14px", cursor: "pointer", display: "flex", alignItems: "center" },
+  badgePill: { display: "inline-block", fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11.5, fontWeight: 700, padding: "3px 10px", borderRadius: 999 },
+  catHeading: { fontFamily: "'Fraunces', serif", fontSize: 15, fontWeight: 600, marginBottom: 8 },
+  rowItem: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", background: "#FBF9F2", borderRadius: 8, border: "1px solid #EDE8D9" },
+  iconBtnGhost: { background: "transparent", border: "none", color: "#B5651D", cursor: "pointer", padding: 4, display: "flex" },
+  emptyNote: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13.5, color: "#9aa5ae", fontStyle: "italic", padding: "10px 0" },
+  catSwitch: { display: "inline-flex", background: "#EFEAD8", borderRadius: 8, padding: 3, gap: 3 },
+  catBtn: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 12.5, fontWeight: 700, border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer" },
+  etapaChip: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 12.5, fontWeight: 600, color: "#0B5E22", background: "#FBF9F2", border: "1px solid #DDD6C3", borderRadius: 999, padding: "6px 12px", cursor: "pointer" },
+  etapaChipActive: { background: "#0B5E22", color: "#fff", borderColor: "#0B5E22" },
+  table: { width: "100%", borderCollapse: "collapse", minWidth: 640 },
+  th: { textAlign: "left", fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: "#7c8a8e", padding: "8px 10px", borderBottom: "2px solid #EDE8D9" },
+  td: { padding: "8px 10px", borderBottom: "1px solid #F2EEDF", verticalAlign: "middle" },
+  cellInput: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13, padding: "6px 8px", borderRadius: 6, border: "1px solid #DDD6C3", width: 90, outline: "none" },
+  rankRow: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", borderRadius: 8, background: "#FBF9F2" },
+  rankRowTop: { background: "rgba(232,184,0,0.09)" },
+  posBadge: { width: 26, height: 26, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11.5, fontWeight: 800, color: "#0B5E22", flexShrink: 0 },
+  premioCard: { background: "#FBF9F2", border: "1px solid #EDE8D9", borderRadius: 12, padding: "16px 16px 18px", textAlign: "center" },
+  premioIcon: { width: 38, height: 38, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" },
+  podiumRow: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", borderBottom: "1px solid #F2EEDF", paddingBottom: 12 },
+  podiumPill: { display: "flex", alignItems: "center", gap: 6, background: "#FBF9F2", border: "1px solid #EDE8D9", borderRadius: 999, padding: "4px 10px 4px 4px" },
+  toast: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "#0B5E22", color: "#F7F3E8", padding: "10px 18px", borderRadius: 999, fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 4px 14px rgba(0,0,0,0.25)" },
+  lockBtn: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11.5, fontWeight: 700, color: "#F7F3E8", background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.28)", borderRadius: 999, padding: "5px 11px", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 },
+  lockBtnActive: { background: "#E8B800", color: "#0B5E22", border: "1px solid #E8B800" },
+  modalOverlay: { position: "fixed", inset: 0, background: "rgba(11,59,34,0.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 50, padding: 16 },
+  modalCard: { background: "#fff", borderRadius: 16, padding: "26px 24px 22px", width: "100%", maxWidth: 340, position: "relative", boxShadow: "0 12px 40px rgba(0,0,0,0.3)" },
+  modalClose: { position: "absolute", top: 12, right: 12, background: "#FBF9F2", border: "1px solid #EDE8D9", borderRadius: "50%", width: 26, height: 26, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: "#7c8a8e" },
+};
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700;800&display=swap');
+.animate-spin { animation: spin 1s linear infinite; }
+@keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
+input[type=number]::-webkit-inner-spin-button { opacity: 0.4; }
+table { font-family: 'Inter', system-ui, sans-serif; }
+
+.classif-grid { display: grid; grid-template-columns: 1.7fr 1.1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) {
+  .classif-grid { grid-template-columns: 1fr; }
+}
+`;
