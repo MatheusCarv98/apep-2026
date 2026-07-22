@@ -929,10 +929,6 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral }) {
                   <th style={S.th}>Pos.</th>
                   <th style={S.th}></th>
                   <th style={S.th}>Pescador(a)</th>
-                  {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => (
-                    <th key={n} style={{ ...S.th, textAlign: "center" }}>E{n}</th>
-                  ))}
-                  <th style={{ ...S.th, textAlign: "right" }}>Descarte</th>
                   <th style={{ ...S.th, textAlign: "right" }}>Total</th>
                 </tr>
               </thead>
@@ -955,18 +951,6 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral }) {
                       <td style={{ ...S.td, fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep }}>
                         {l.pescador.nome}
                         {premiado && <Trophy size={13} color="#E8B800" style={{ marginLeft: 6, verticalAlign: -2 }} />}
-                      </td>
-                      {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => {
-                        const pts = l.etapaPontos[n];
-                        const isDescarte = pts !== undefined && pts === l.descartada && l.nEtapas >= 2;
-                        return (
-                          <td key={n} style={{ ...S.td, textAlign: "center", fontSize: 12.5, color: isDescarte ? "#c04a4a" : "#5b6b6f", textDecoration: isDescarte ? "line-through" : "none" }}>
-                            {pts !== undefined ? fmtPts(pts).split(",")[0] : "—"}
-                          </td>
-                        );
-                      })}
-                      <td style={{ ...S.td, textAlign: "right", fontSize: 12, color: "#c04a4a" }}>
-                        {l.descartada !== null ? `−${fmtPts(l.descartada)}` : "—"}
                       </td>
                       <td style={{ ...S.td, textAlign: "right", fontFamily: S.fonts.body, fontWeight: 800, color: CATS[catAtual].color, fontSize: 14.5 }}>
                         {fmtPts(l.total)}
@@ -1017,7 +1001,7 @@ function PescadorSpotlight({ linha, cat, topN }) {
         </div>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 }}>
+      <div className="stat-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 }}>
         <MiniStat label="Total de Peixes" valor={`${fmtInt(linha.qtdTemp || 0)} peixes`} />
         <MiniStat label="Peso Total" valor={`${fmt(linha.pesoTemp || 0)} kg`} />
         <MiniStat label="Média por Peixe" valor={`${fmt(mediaPorPeixe)} kg`} />
@@ -1027,7 +1011,7 @@ function PescadorSpotlight({ linha, cat, topN }) {
       <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, fontWeight: 700, color: S.colors.deep, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3 }}>
         Desempenho por Etapa
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8 }}>
+      <div className="etapa-mini-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8 }}>
         {etapasNums.map((n) => {
           const d = linha.etapaDetalhe[n];
           const isDescarte = d && d.pontos === linha.descartada && linha.nEtapas >= 2;
@@ -1501,4 +1485,12 @@ table { font-family: 'Inter', system-ui, sans-serif; }
 @media (max-width: 900px) {
   .classif-grid { grid-template-columns: 1fr; }
 }
+@media (max-width: 480px) {
+  .etapa-mini-grid { grid-template-columns: repeat(2, 1fr) !important; }
+}
+@media (max-width: 380px) {
+  .stat-grid-2 { grid-template-columns: 1fr !important; }
+}
+* { box-sizing: border-box; }
+html, body { overflow-x: hidden; max-width: 100%; }
 `;
