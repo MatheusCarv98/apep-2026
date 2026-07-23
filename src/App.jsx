@@ -86,7 +86,7 @@ function Avatar({ foto, nome, size = 40, cor = "#0B5E22" }) {
       <img
         src={foto}
         alt={nome}
-        style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "1px solid #EDE8D9" }}
+        style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "1px solid #EDE8D9", display: "block", verticalAlign: "middle" }}
       />
     );
   }
@@ -101,7 +101,7 @@ function Avatar({ foto, nome, size = 40, cor = "#0B5E22" }) {
       style={{
         width: size, height: size, borderRadius: "50%", flexShrink: 0,
         background: `${cor}1A`, color: cor, display: "flex", alignItems: "center", justifyContent: "center",
-        fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: size * 0.38,
+        fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: size * 0.38, boxSizing: "border-box",
       }}
     >
       {iniciais || <User size={size * 0.5} />}
@@ -923,43 +923,39 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral }) {
             <div style={{ fontFamily: S.fonts.body, fontSize: 12, color: "#8a9b9e", marginBottom: 8 }}>
               Toque em um pescador(a) na lista para ver o detalhamento completo ao lado.
             </div>
-            <table style={S.table}>
-              <thead>
-                <tr>
-                  <th style={S.th}>Pos.</th>
-                  <th style={S.th}></th>
-                  <th style={S.th}>Pescador(a)</th>
-                  <th style={{ ...S.th, textAlign: "right" }}>Total</th>
-                </tr>
-              </thead>
-              <tbody>
-                {linhas.map((l) => {
-                  const premiado = l.posicao <= topN;
-                  const ativo = selecionado && selecionado.pescador.id === l.pescador.id;
-                  return (
-                    <tr
-                      key={l.pescador.id}
-                      onClick={() => setSelecionadoId(l.pescador.id)}
-                      style={{ cursor: "pointer", background: ativo ? "rgba(11,94,34,0.08)" : premiado ? "rgba(232,184,0,0.10)" : "transparent" }}
-                    >
-                      <td style={S.td}>
-                        <PosicaoBadge pos={l.posicao} />
-                      </td>
-                      <td style={{ ...S.td, textAlign: "center" }}>
-                        <Avatar foto={l.pescador.foto} nome={l.pescador.nome} size={26} cor={CATS[catAtual].color} />
-                      </td>
-                      <td style={{ ...S.td, fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep }}>
-                        {l.pescador.nome}
-                        {premiado && <Trophy size={13} color="#E8B800" style={{ marginLeft: 6, verticalAlign: -2 }} />}
-                      </td>
-                      <td style={{ ...S.td, textAlign: "right", fontFamily: S.fonts.body, fontWeight: 800, color: CATS[catAtual].color, fontSize: 14.5 }}>
-                        {fmtPts(l.total)}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <div style={{ display: "flex", padding: "0 4px 8px", fontFamily: S.fonts.body, fontSize: 11, fontWeight: 700, color: "#8a9b9e", textTransform: "uppercase", letterSpacing: 0.3 }}>
+              <div style={{ width: 34, flexShrink: 0 }}>Pos.</div>
+              <div style={{ flex: 1, minWidth: 0 }}>Pescador(a)</div>
+              <div style={{ flexShrink: 0, textAlign: "right" }}>Total</div>
+            </div>
+            <div style={{ display: "grid", gap: 2 }}>
+              {linhas.map((l) => {
+                const premiado = l.posicao <= topN;
+                const ativo = selecionado && selecionado.pescador.id === l.pescador.id;
+                return (
+                  <div
+                    key={l.pescador.id}
+                    onClick={() => setSelecionadoId(l.pescador.id)}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 10, padding: "9px 4px", borderRadius: 8, cursor: "pointer",
+                      background: ativo ? "rgba(11,94,34,0.08)" : premiado ? "rgba(232,184,0,0.10)" : "transparent",
+                    }}
+                  >
+                    <div style={{ width: 34, flexShrink: 0 }}>
+                      <PosicaoBadge pos={l.posicao} />
+                    </div>
+                    <Avatar foto={l.pescador.foto} nome={l.pescador.nome} size={26} cor={CATS[catAtual].color} />
+                    <div style={{ flex: 1, minWidth: 0, fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {l.pescador.nome}
+                      {premiado && <Trophy size={12} color="#E8B800" style={{ marginLeft: 5, verticalAlign: -1 }} />}
+                    </div>
+                    <div style={{ flexShrink: 0, textAlign: "right", fontFamily: S.fonts.body, fontWeight: 800, color: CATS[catAtual].color, fontSize: 14 }}>
+                      {fmtPts(l.total)}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
           </div>
 
           {selecionado && <PescadorSpotlight linha={selecionado} cat={catAtual} topN={topN} />}
