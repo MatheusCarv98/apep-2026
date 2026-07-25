@@ -510,7 +510,7 @@ export default function ApepApp() {
         )}
 
         {tab === "premios" && (
-          <PremiosTab catAtual={catAtual} setCatAtual={setCatAtual} premios={premiosEspeciais[catAtual]} etapas={etapas} pescadores={pescadores} rankingEtapa={rankingEtapa} />
+          <PremiosTab catAtual={catAtual} setCatAtual={setCatAtual} premios={premiosEspeciais[catAtual]} etapas={etapas} pescadores={pescadores} rankingEtapa={rankingEtapa} etapasInfo={etapasInfo} />
         )}
       </div>
 
@@ -1445,7 +1445,13 @@ function EvolucaoTab({ catAtual, setCatAtual, pescadores, etapas, etapasInfo, cl
 
 /* ================= PRÊMIOS ================= */
 
-function PremiosTab({ catAtual, setCatAtual, premios, etapas, pescadores, rankingEtapa }) {
+function PremiosTab({ catAtual, setCatAtual, premios, etapas, pescadores, rankingEtapa, etapasInfo }) {
+  const [aberta, setAberta] = useState(null);
+
+  useEffect(() => {
+    setAberta(null);
+  }, [catAtual]);
+
   return (
     <div>
       <div style={S.card}>
@@ -1461,23 +1467,66 @@ function PremiosTab({ catAtual, setCatAtual, premios, etapas, pescadores, rankin
       </div>
 
       <div style={{ ...S.card, marginTop: 16 }}>
-        <SectionTitle icon={Medal} title="Pódios por Etapa" subtitle={`1º Troféu · 2º e 3º Medalha — ${CATS[catAtual].label}`} />
-        <div style={{ display: "grid", gap: 14 }}>
+        <SectionTitle icon={Medal} title="Pódios por Etapa" subtitle={`1º Troféu · 2º e 3º Medalha — ${CATS[catAtual].label}. Toque numa etapa para ver a classificação completa.`} />
+        <div style={{ display: "grid", gap: 6 }}>
           {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => {
-            const rk = rankingEtapa(n, catAtual).slice(0, 3);
+            const rk = rankingEtapa(n, catAtual);
+            const podio = rk.slice(0, 3);
+            const isAberta = aberta === n;
             return (
-              <div key={n} style={S.podiumRow}>
-                <div style={{ fontFamily: S.fonts.body, fontWeight: 700, fontSize: 13, color: S.colors.deep, minWidth: 68 }}>Etapa {n}</div>
-                {rk.length === 0 ? (
-                  <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: "#9aa5ae" }}>sem resultados</span>
-                ) : (
-                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                    {rk.map((r) => (
-                      <div key={r.pescador.id} style={S.podiumPill}>
-                        <PosicaoBadge pos={r.pos} />
-                        <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: S.colors.deep, fontWeight: 600 }}>{r.pescador.nome}</span>
-                      </div>
-                    ))}
+              <div key={n}>
+                <div
+                  onClick={() => rk.length > 0 && setAberta(isAberta ? null : n)}
+                  style={{ ...S.podiumRow, cursor: rk.length > 0 ? "pointer" : "default", borderRadius: 8, padding: "6px 8px", background: isAberta ? "rgba(11,94,34,0.06)" : "transparent" }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 150 }}>
+                    {rk.length > 0 && (
+                      <ChevronRight size={15} color="#8a9b9e" style={{ transform: isAberta ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }} />
+                    )}
+                    <div style={{ fontFamily: S.fonts.body, fontWeight: 700, fontSize: 13, color: S.colors.deep }}>{etapaTitulo(n, etapasInfo)}</div>
+                  </div>
+                  {rk.length === 0 ? (
+                    <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: "#9aa5ae" }}>sem resultados</span>
+                  ) : (
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      {podio.map((r) => (
+                        <div key={r.pescador.id} style={S.podiumPill}>
+                          <PosicaoBadge pos={r.pos} />
+                          <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: S.colors.deep, fontWeight: 600 }}>{r.pescador.nome}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {isAberta && (
+                  <div style={{ overflowX: "auto", marginTop: 4, marginBottom: 6, border: "1px solid #EDE8D9", borderRadius: 10 }}>
+                    <table style={{ ...S.table, minWidth: 0 }}>
+                      <thead>
+                        <tr>
+                          <th style={S.th}>Pos.</th>
+                          <th style={S.th}></th>
+                          <th style={S.th}>Pescador(a)</th>
+                          <th style={{ ...S.th, textAlign: "right" }}>Peso (kg)</th>
+                          <th style={{ ...S.th, textAlign: "right" }}>Pontos</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rk.map((r) => (
+                          <tr key={r.pescador.id}>
+                            <td style={S.td}>
+                              <PosicaoBadge pos={r.pos} />
+                            </td>
+                            <td style={{ ...S.td, textAlign: "center" }}>
+                              <Avatar foto={r.pescador.foto} nome={r.pescador.nome} size={24} cor={CATS[catAtual].color} />
+                            </td>
+                            <td style={{ ...S.td, fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep }}>{r.pescador.nome}</td>
+                            <td style={{ ...S.td, textAlign: "right", fontFamily: S.fonts.body, color: "#5b6b6f" }}>{fmt(r.peso)}</td>
+                            <td style={{ ...S.td, textAlign: "right", fontFamily: S.fonts.body, fontWeight: 800, color: CATS[catAtual].color }}>{fmtPts(r.pontos)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
