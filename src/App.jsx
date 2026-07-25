@@ -54,6 +54,19 @@ function fmtPts(n) {
   return Number(n).toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
 }
 
+function fmtData(iso) {
+  if (!iso) return "";
+  const [ano, mes, dia] = iso.split("-");
+  if (!ano || !mes || !dia) return iso;
+  return `${dia}/${mes}/${ano}`;
+}
+function etapaTitulo(n, etapasInfo) {
+  const info = etapasInfo && etapasInfo[n];
+  if (!info || (!info.local && !info.data)) return `Etapa ${n}`;
+  const partes = [info.local, info.data ? fmtData(info.data) : null].filter(Boolean);
+  return `Etapa ${n} — ${partes.join(" · ")}`;
+}
+
 const ADMIN_PIN = "APEP2026";
 
 function resizeImageFile(file, size = 240) {
@@ -118,6 +131,11 @@ export default function ApepApp() {
     for (let i = 1; i <= N_ETAPAS; i++) obj[i] = {};
     return obj;
   });
+  const [etapasInfo, setEtapasInfo] = useState(() => {
+    const obj = {};
+    for (let i = 1; i <= N_ETAPAS; i++) obj[i] = { local: "", data: "" };
+    return obj;
+  });
   const [tab, setTab] = useState("classificacao");
   const [catAtual, setCatAtual] = useState("M");
   const [etapaAtual, setEtapaAtual] = useState(1);
@@ -135,7 +153,7 @@ export default function ApepApp() {
       try {
         const { data, error } = await supabase
           .from("apep_dados")
-          .select("pescadores, etapas")
+          .select("pescadores, etapas, etapas_info")
           .eq("id", "atual")
           .maybeSingle();
         if (error) throw error;
@@ -144,6 +162,9 @@ export default function ApepApp() {
           const obj = {};
           for (let i = 1; i <= N_ETAPAS; i++) obj[i] = (data.etapas && data.etapas[i]) || {};
           setEtapas(obj);
+          const info = {};
+          for (let i = 1; i <= N_ETAPAS; i++) info[i] = (data.etapas_info && data.etapas_info[i]) || { local: "", data: "" };
+          setEtapasInfo(info);
         }
       } catch (e) {
         console.error("Falha ao carregar", e);
@@ -154,7 +175,7 @@ export default function ApepApp() {
   }, []);
 
   // ---- save (debounced) ----
-  const persist = useCallback((nextPescadores, nextEtapas) => {
+  const persist = useCallback((nextPescadores, nextEtapas, nextEtapasInfo) => {
     setSaving(true);
     clearTimeout(persist._t);
     persist._t = setTimeout(async () => {
@@ -165,6 +186,7 @@ export default function ApepApp() {
             id: "atual",
             pescadores: nextPescadores,
             etapas: nextEtapas,
+            etapas_info: nextEtapasInfo,
             updated_at: new Date().toISOString(),
           });
         if (error) throw error;
@@ -178,12 +200,16 @@ export default function ApepApp() {
 
   useEffect(() => {
     if (!loaded) return;
-    persist(pescadores, etapas);
-  }, [pescadores, etapas, loaded, persist]);
+    persist(pescadores, etapas, etapasInfo);
+  }, [pescadores, etapas, etapasInfo, loaded, persist]);
 
   function showToast(msg) {
     setToast(msg);
     setTimeout(() => setToast(null), 2200);
+  }
+
+  function updateEtapaInfo(n, campo, valor) {
+    setEtapasInfo((prev) => ({ ...prev, [n]: { ...prev[n], [campo]: valor } }));
   }
 
   // ---- salvar manualmente (imediato, sem debounce) ----
@@ -197,6 +223,7 @@ export default function ApepApp() {
           id: "atual",
           pescadores,
           etapas,
+          etapas_info: etapasInfo,
           updated_at: new Date().toISOString(),
         });
       if (error) throw error;
@@ -407,6 +434,17 @@ export default function ApepApp() {
     return total;
   }, [pescadores, etapas]);
 
+  const proximaEtapa = useMemo(() => {
+    for (let et = 1; et <= N_ETAPAS; et++) {
+      const temResultado = pescadores.some((p) => {
+        const e = (etapas[et] || {})[p.id];
+        return e && e.peso !== "" && parseFloat(e.peso) > 0;
+      });
+      if (!temResultado) return { n: et, ...(etapasInfo[et] || { local: "", data: "" }) };
+    }
+    return null;
+  }, [pescadores, etapas, etapasInfo]);
+
   if (!loaded) {
     return (
       <div style={{ ...S.page, display: "flex", alignItems: "center", justifyContent: "center", minHeight: 420 }}>
@@ -446,6 +484,8 @@ export default function ApepApp() {
             setCatAtual={setCatAtual}
             pescadores={pescadoresPorCat(catAtual)}
             etapas={etapas}
+            etapasInfo={etapasInfo}
+            updateEtapaInfo={updateEtapaInfo}
             updateEntry={updateEntry}
             ranking={rankingEtapa(etapaAtual, catAtual)}
             onSalvar={salvarAgora}
@@ -454,7 +494,7 @@ export default function ApepApp() {
         )}
 
         {tab === "classificacao" && (
-          <ClassificacaoTab catAtual={catAtual} setCatAtual={setCatAtual} linhas={classificacaoGeral[catAtual] || []} totalKgGeral={totalKgGeral} />
+          <ClassificacaoTab catAtual={catAtual} setCatAtual={setCatAtual} linhas={classificacaoGeral[catAtual] || []} totalKgGeral={totalKgGeral} proximaEtapa={proximaEtapa} etapasInfo={etapasInfo} />
         )}
 
         {tab === "evolucao" && (
@@ -463,6 +503,7 @@ export default function ApepApp() {
             setCatAtual={setCatAtual}
             pescadores={pescadoresPorCat(catAtual)}
             etapas={etapas}
+            etapasInfo={etapasInfo}
             classificacaoGeral={classificacaoGeral[catAtual] || []}
             rankingEtapa={rankingEtapa}
           />
@@ -700,25 +741,55 @@ function PescadoresTab({ pescadores, novoNome, setNovoNome, novoCat, setNovoCat,
 
 /* ================= ETAPA ================= */
 
-function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores, etapas, updateEntry, ranking, onSalvar, saving }) {
+function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores, etapas, etapasInfo, updateEtapaInfo, updateEntry, ranking, onSalvar, saving }) {
+  const infoAtual = (etapasInfo && etapasInfo[etapaAtual]) || { local: "", data: "" };
   return (
     <div>
       <div style={S.card}>
         <SectionTitle icon={Scale} title="Lançar pesagem da etapa" subtitle="Peso total em kg (ex.: 3.250). Cada peixe exótico (arraia, cação, tarpon etc.) soma +0,500kg ao peso. A posição e os pontos COSAPYL são calculados automaticamente." />
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 18 }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => (
-              <button
-                key={n}
-                onClick={() => setEtapaAtual(n)}
-                style={{ ...S.etapaChip, ...(etapaAtual === n ? S.etapaChipActive : {}) }}
-              >
-                Etapa {n}
-              </button>
-            ))}
+            {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => {
+              const info = (etapasInfo && etapasInfo[n]) || {};
+              return (
+                <button
+                  key={n}
+                  onClick={() => setEtapaAtual(n)}
+                  style={{ ...S.etapaChip, ...(etapaAtual === n ? S.etapaChipActive : {}), display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.25, minWidth: 64 }}
+                >
+                  <span>Etapa {n}</span>
+                  {info.local && (
+                    <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.8, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {info.local}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
           </div>
           <div style={{ marginLeft: "auto" }}>
             <CatSwitch cat={catAtual} setCat={setCatAtual} />
+          </div>
+        </div>
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 18, background: "#FBF9F2", border: "1px solid #EDE8D9", borderRadius: 10, padding: 12 }}>
+          <div style={{ flex: "1 1 220px" }}>
+            <label style={S.miniLabel}>Local da Etapa {etapaAtual}</label>
+            <input
+              type="text" placeholder="ex.: Barra do Cunhaú"
+              value={infoAtual.local}
+              onChange={(ev) => updateEtapaInfo(etapaAtual, "local", ev.target.value)}
+              style={{ ...S.input, width: "100%" }}
+            />
+          </div>
+          <div style={{ flex: "0 1 180px" }}>
+            <label style={S.miniLabel}>Data da Etapa {etapaAtual}</label>
+            <input
+              type="date"
+              value={infoAtual.data}
+              onChange={(ev) => updateEtapaInfo(etapaAtual, "data", ev.target.value)}
+              style={{ ...S.input, width: "100%" }}
+            />
           </div>
         </div>
 
@@ -826,8 +897,8 @@ function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores
       {ranking.length > 0 && (
         <div style={{ ...S.card, marginTop: 16 }}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
-            <SectionTitle icon={Trophy} title={`Resultado da Etapa ${etapaAtual} — ${CATS[catAtual].label}`} subtitle="Classificação pelo peso total e pontuação COSAPYL." />
-            <button onClick={() => exportarEtapaPDF(etapaAtual, catAtual, ranking)} style={S.btnGhost}>
+            <SectionTitle icon={Trophy} title={`Resultado — ${etapaTitulo(etapaAtual, etapasInfo)} — ${CATS[catAtual].label}`} subtitle="Classificação pelo peso total e pontuação COSAPYL." />
+            <button onClick={() => exportarEtapaPDF(etapaAtual, catAtual, ranking, etapasInfo)} style={S.btnGhost}>
               <FileDown size={15} style={{ marginRight: 6 }} /> Baixar PDF
             </button>
           </div>
@@ -866,7 +937,7 @@ function PosicaoBadge({ pos }) {
 
 /* ================= CLASSIFICAÇÃO GERAL ================= */
 
-function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral }) {
+function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral, proximaEtapa, etapasInfo }) {
   const topN = TOP_GERAL[catAtual];
   const [selecionadoId, setSelecionadoId] = useState(null);
 
@@ -882,11 +953,34 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral }) {
         <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
           <SectionTitle icon={Trophy} title="Classificação Geral do Campeonato" subtitle={`Soma dos pontos das ${N_ETAPAS} etapas, descartando a de menor pontuação. Top ${topN} recebem troféu e material de pesca.`} />
           {linhas.length > 0 && (
-            <button onClick={() => exportarClassificacaoPDF(catAtual, linhas, topN)} style={S.btnGhost}>
+            <button onClick={() => exportarClassificacaoPDF(catAtual, linhas, topN, etapasInfo)} style={S.btnGhost}>
               <FileDown size={15} style={{ marginRight: 6 }} /> Baixar PDF
             </button>
           )}
         </div>
+
+        {proximaEtapa && (proximaEtapa.local || proximaEtapa.data) && (
+          <div
+            style={{
+              display: "flex", alignItems: "center", gap: 12,
+              background: "#FBF3D9", border: "1px solid #EBD98A",
+              borderRadius: 12, padding: "12px 16px", marginBottom: 14,
+            }}
+          >
+            <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(232,184,0,0.22)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <Calendar size={17} color="#8a6a00" />
+            </div>
+            <div>
+              <div style={{ fontFamily: S.fonts.body, fontSize: 11, fontWeight: 700, color: "#8a6a00", textTransform: "uppercase", letterSpacing: 0.3 }}>
+                Próxima etapa — Etapa {proximaEtapa.n}
+              </div>
+              <div style={{ fontFamily: S.fonts.display, fontSize: 15.5, fontWeight: 700, color: "#5b4600" }}>
+                {proximaEtapa.local || "Local a definir"}
+                {proximaEtapa.data && ` — ${fmtData(proximaEtapa.data)}`}
+              </div>
+            </div>
+          </div>
+        )}
 
         <div
           style={{
@@ -958,7 +1052,7 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral }) {
             </div>
           </div>
 
-          {selecionado && <PescadorSpotlight linha={selecionado} cat={catAtual} topN={topN} />}
+          {selecionado && <PescadorSpotlight linha={selecionado} cat={catAtual} topN={topN} etapasInfo={etapasInfo} />}
         </div>
       )}
     </div>
@@ -967,13 +1061,14 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral }) {
 
 /* ================= PAINEL DE DESTAQUE DO PESCADOR ================= */
 
-function PescadorSpotlight({ linha, cat, topN }) {
+function PescadorSpotlight({ linha, cat, topN, etapasInfo }) {
   const etapasNums = Array.from({ length: N_ETAPAS }, (_, i) => i + 1);
   const mediaPorPeixe = linha.qtdTemp > 0 ? (linha.pesoTemp || 0) / linha.qtdTemp : 0;
   const premiado = linha.posicao <= topN;
 
   const chartData = etapasNums.map((n) => ({
     etapa: `E${n}`,
+    etapaCompleta: etapaTitulo(n, etapasInfo),
     pontos: linha.etapaDetalhe[n] ? linha.etapaDetalhe[n].pontos : null,
   }));
 
@@ -1019,7 +1114,14 @@ function PescadorSpotlight({ linha, cat, topN }) {
                 border: isDescarte ? "1px solid #E3A9A5" : "1px solid #EDE8D9",
               }}
             >
-              <div style={{ fontFamily: S.fonts.body, fontSize: 11, fontWeight: 700, color: "#8a9b9e" }}>E{n}</div>
+              <div style={{ fontFamily: S.fonts.body, fontSize: 11, fontWeight: 700, color: "#8a9b9e" }} title={etapaTitulo(n, etapasInfo)}>
+                E{n}
+                {etapasInfo && etapasInfo[n] && etapasInfo[n].local && (
+                  <div style={{ fontSize: 9.5, fontWeight: 600, color: "#b0aa93", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {etapasInfo[n].local}
+                  </div>
+                )}
+              </div>
               {!d ? (
                 <div style={{ fontFamily: S.fonts.body, fontSize: 11, color: "#b7bfc2", marginTop: 6 }}>Não realizada</div>
               ) : (
@@ -1055,6 +1157,7 @@ function PescadorSpotlight({ linha, cat, topN }) {
             <YAxis tick={{ fontSize: 11.5, fontFamily: "Inter" }} stroke="#8a9b9e" domain={[0, 100]} />
             <Tooltip
               formatter={(value) => (value === null || value === undefined ? "—" : fmtPts(value))}
+              labelFormatter={(_, payload) => (payload && payload[0] ? payload[0].payload.etapaCompleta : "")}
               contentStyle={{ fontFamily: "Inter", fontSize: 12, borderRadius: 8, border: "1px solid #EDE8D9" }}
             />
             <Line type="monotone" dataKey="pontos" name="Pontuação" stroke={CATS[cat].color} strokeWidth={2.5} dot={{ r: 3.5 }} connectNulls />
@@ -1083,11 +1186,11 @@ function pdfCabecalho(doc, titulo, subtitulo) {
   doc.text(`Gerado em ${new Date().toLocaleString("pt-BR")}`, doc.internal.pageSize.getWidth() - 14, 33, { align: "right" });
 }
 
-function exportarClassificacaoPDF(cat, linhas, topN) {
+function exportarClassificacaoPDF(cat, linhas, topN, etapasInfo) {
   const doc = new jsPDF({ orientation: "landscape" });
   pdfCabecalho(doc, `Classificação Geral — ${CATS[cat].label}`, `Soma dos pontos das ${N_ETAPAS} etapas, descartando a de menor pontuação. Top ${topN} recebem premiação.`);
 
-  const cols = ["Pos.", "Pescador(a)", ...Array.from({ length: N_ETAPAS }, (_, i) => `E${i + 1}`), "Descarte", "Total"];
+  const cols = ["Pos.", "Pescador(a)", ...Array.from({ length: N_ETAPAS }, (_, i) => etapaTitulo(i + 1, etapasInfo)), "Descarte", "Total"];
   const rows = linhas.map((l) => [
     `${l.posicao}º`,
     l.pescador.nome,
@@ -1104,7 +1207,7 @@ function exportarClassificacaoPDF(cat, linhas, topN) {
     head: [cols],
     body: rows,
     theme: "striped",
-    headStyles: { fillColor: [11, 94, 34], fontSize: 8.5 },
+    headStyles: { fillColor: [11, 94, 34], fontSize: 7.5 },
     styles: { fontSize: 8.5, cellPadding: 2.5 },
     didParseCell: (data) => {
       if (data.row.index < topN && data.column.index === 0) {
@@ -1117,9 +1220,9 @@ function exportarClassificacaoPDF(cat, linhas, topN) {
   doc.save(`APEP2026_classificacao_${CATS[cat].label.toLowerCase()}.pdf`);
 }
 
-function exportarEtapaPDF(etapa, cat, ranking) {
+function exportarEtapaPDF(etapa, cat, ranking, etapasInfo) {
   const doc = new jsPDF();
-  pdfCabecalho(doc, `Resultado da Etapa ${etapa} — ${CATS[cat].label}`, "Classificação pelo peso total e pontuação COSAPYL da etapa.");
+  pdfCabecalho(doc, `Resultado — ${etapaTitulo(etapa, etapasInfo)} — ${CATS[cat].label}`, "Classificação pelo peso total e pontuação COSAPYL da etapa.");
 
   const rows = ranking.map((r, idx) => [
     `${idx + 1}º`,
@@ -1222,7 +1325,7 @@ function MiniStat({ label, valor }) {
 
 const CHART_COLORS = ["#0B5E22", "#E8B800", "#1B7FB8", "#C0453F", "#7A4FB5", "#D97A2B", "#3F9E8C", "#B5651D", "#5B6B6F", "#C74E8B"];
 
-function EvolucaoTab({ catAtual, setCatAtual, pescadores, etapas, classificacaoGeral, rankingEtapa }) {
+function EvolucaoTab({ catAtual, setCatAtual, pescadores, etapas, etapasInfo, classificacaoGeral, rankingEtapa }) {
   const [metrica, setMetrica] = useState("peso"); // "peso" | "pontos"
 
   const ordenados = useMemo(() => {
@@ -1250,14 +1353,15 @@ function EvolucaoTab({ catAtual, setCatAtual, pescadores, etapas, classificacaoG
       rk.forEach((r) => {
         mapa[r.pescador.id] = metrica === "peso" ? r.peso : r.pontos;
       });
-      const ponto = { etapa: `E${et}` };
+      const local = etapasInfo && etapasInfo[et] && etapasInfo[et].local;
+      const ponto = { etapa: local ? (local.length > 12 ? local.slice(0, 11) + "…" : local) : `Etapa ${et}`, etapaCompleta: etapaTitulo(et, etapasInfo) };
       ordenados.forEach((p) => {
         if (ativos.has(p.id)) ponto[p.nome] = mapa[p.id] !== undefined ? mapa[p.id] : null;
       });
       porEtapa.push(ponto);
     }
     return porEtapa;
-  }, [etapas, catAtual, metrica, ordenados, ativos]);
+  }, [etapas, catAtual, metrica, ordenados, ativos, etapasInfo]);
 
   return (
     <div style={S.card}>
@@ -1292,10 +1396,11 @@ function EvolucaoTab({ catAtual, setCatAtual, pescadores, etapas, classificacaoG
             <ResponsiveContainer>
               <LineChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#EDE8D9" />
-                <XAxis dataKey="etapa" tick={{ fontSize: 12.5, fontFamily: "Inter" }} stroke="#8a9b9e" />
+                <XAxis dataKey="etapa" tick={{ fontSize: 11, fontFamily: "Inter" }} stroke="#8a9b9e" angle={-20} textAnchor="end" height={46} interval={0} />
                 <YAxis tick={{ fontSize: 12.5, fontFamily: "Inter" }} stroke="#8a9b9e" />
                 <Tooltip
                   formatter={(value) => (value === null || value === undefined ? "—" : metrica === "peso" ? `${fmt(value)} kg` : fmtPts(value))}
+                  labelFormatter={(_, payload) => (payload && payload[0] ? payload[0].payload.etapaCompleta : "")}
                   contentStyle={{ fontFamily: "Inter", fontSize: 12.5, borderRadius: 8, border: "1px solid #EDE8D9" }}
                 />
                 <Legend wrapperStyle={{ fontFamily: "Inter", fontSize: 12.5 }} />
