@@ -93,6 +93,33 @@ function resizeImageFile(file, size = 240) {
   });
 }
 
+function CountUp({ value, decimals = 3, duration = 900, suffix = "" }) {
+  const [display, setDisplay] = useState(0);
+  const alvo = Number(value) || 0;
+
+  useEffect(() => {
+    let frame;
+    const inicio = performance.now();
+    const de = display;
+    function passo(agora) {
+      const t = Math.min(1, (agora - inicio) / duration);
+      const ease = 1 - Math.pow(1 - t, 3);
+      setDisplay(de + (alvo - de) * ease);
+      if (t < 1) frame = requestAnimationFrame(passo);
+    }
+    frame = requestAnimationFrame(passo);
+    return () => cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [alvo, duration]);
+
+  return (
+    <>
+      {display.toLocaleString("pt-BR", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}
+      {suffix}
+    </>
+  );
+}
+
 function Avatar({ foto, nome, size = 40, cor = "#0B5E22" }) {
   if (foto) {
     return (
@@ -616,6 +643,27 @@ function Header({ saving, isAdmin, onLock }) {
           </div>
         </div>
         <Waves size={220} style={{ position: "absolute", right: -30, bottom: -46, opacity: 0.08, color: S.colors.cream }} />
+
+        <Fish size={22} className="swim-fish" style={{ color: "rgba(240,246,236,0.5)" }} />
+
+        <div className="wave-layer">
+          <div className="wave-track wave-slow">
+            <svg viewBox="0 0 600 60" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M0,30 C100,60 200,0 300,30 C400,60 500,0 600,30 L600,60 L0,60 Z" fill="rgba(240,246,236,0.10)" />
+            </svg>
+            <svg viewBox="0 0 600 60" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M0,30 C100,60 200,0 300,30 C400,60 500,0 600,30 L600,60 L0,60 Z" fill="rgba(240,246,236,0.10)" />
+            </svg>
+          </div>
+          <div className="wave-track">
+            <svg viewBox="0 0 600 60" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M0,36 C120,6 240,66 360,36 C440,16 520,50 600,30 L600,60 L0,60 Z" fill="rgba(240,246,236,0.16)" />
+            </svg>
+            <svg viewBox="0 0 600 60" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M0,36 C120,6 240,66 360,36 C440,16 520,50 600,30 L600,60 L0,60 Z" fill="rgba(240,246,236,0.16)" />
+            </svg>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -994,7 +1042,7 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral, proxima
           </div>
           <div>
             <div style={{ fontFamily: S.fonts.display, fontSize: 20, fontWeight: 700, lineHeight: 1.1 }}>
-              {fmt(totalKgGeral)} kg
+              <CountUp value={totalKgGeral} decimals={3} suffix=" kg" />
             </div>
             <div style={{ fontFamily: S.fonts.body, fontSize: 12, opacity: 0.85 }}>
               Total pescado no campeonato (masculino + feminino, todas as etapas)
@@ -1023,16 +1071,18 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral, proxima
               <div style={{ flexShrink: 0, textAlign: "right" }}>Total</div>
             </div>
             <div style={{ display: "grid", gap: 2 }}>
-              {linhas.map((l) => {
+              {linhas.map((l, idx) => {
                 const premiado = l.posicao <= topN;
                 const ativo = selecionado && selecionado.pescador.id === l.pescador.id;
                 return (
                   <div
                     key={l.pescador.id}
                     onClick={() => setSelecionadoId(l.pescador.id)}
+                    className={`row-anim${l.posicao <= 3 ? " podium-glow" : ""}`}
                     style={{
                       display: "flex", alignItems: "center", gap: 10, padding: "9px 4px", borderRadius: 8, cursor: "pointer",
                       background: ativo ? "rgba(11,94,34,0.08)" : premiado ? "rgba(232,184,0,0.10)" : "transparent",
+                      animationDelay: `${Math.min(idx, 12) * 35}ms`,
                     }}
                   >
                     <div style={{ width: 34, flexShrink: 0 }}>
@@ -1093,8 +1143,8 @@ function PescadorSpotlight({ linha, cat, topN, etapasInfo }) {
       </div>
 
       <div className="stat-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 }}>
-        <MiniStat label="Total de Peixes" valor={`${fmtInt(linha.qtdTemp || 0)} peixes`} />
-        <MiniStat label="Peso Total" valor={`${fmt(linha.pesoTemp || 0)} kg`} />
+        <MiniStat label="Total de Peixes" valor={<><CountUp value={linha.qtdTemp || 0} decimals={0} /> peixes</>} />
+        <MiniStat label="Peso Total" valor={<CountUp value={linha.pesoTemp || 0} decimals={3} suffix=" kg" />} />
         <MiniStat label="Média por Peixe" valor={`${fmt(mediaPorPeixe)} kg`} />
         <MiniStat label="Maior Peixe" valor={linha.maiorPeixeTemp > 0 ? `${fmt(linha.maiorPeixeTemp)} kg` : "—"} />
       </div>
@@ -1644,4 +1694,36 @@ table { font-family: 'Inter', system-ui, sans-serif; }
 }
 * { box-sizing: border-box; }
 html, body { overflow-x: hidden; max-width: 100%; }
+
+/* ---- ondas do cabeçalho ---- */
+.wave-layer { position: absolute; left: 0; right: 0; bottom: -2px; height: 60px; overflow: hidden; pointer-events: none; }
+.wave-track { position: absolute; top: 0; left: 0; height: 100%; width: 200%; display: flex; animation: wave-slide 16s linear infinite; }
+.wave-track svg { width: 50%; height: 100%; flex-shrink: 0; }
+.wave-track.wave-slow { animation-duration: 26s; opacity: 0.55; }
+@keyframes wave-slide { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+
+/* ---- peixinho nadando ---- */
+.swim-fish { position: absolute; top: 18px; left: 0; opacity: 0; pointer-events: none; animation: swim-across 24s ease-in-out infinite; animation-delay: 3s; }
+@keyframes swim-across {
+  0% { transform: translateX(-40px) translateY(0); opacity: 0; }
+  4% { opacity: 0.9; }
+  48% { transform: translateX(calc(100vw + 40px)) translateY(-14px); opacity: 0.9; }
+  52% { opacity: 0; }
+  100% { transform: translateX(calc(100vw + 40px)) translateY(-14px); opacity: 0; }
+}
+
+/* ---- linhas entrando ---- */
+@keyframes row-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.row-anim { animation: row-in 0.42s ease both; }
+
+/* ---- brilho do pódio ---- */
+@keyframes podium-shine {
+  0% { box-shadow: 0 0 0 0 rgba(232,184,0,0); }
+  50% { box-shadow: 0 0 0 3px rgba(232,184,0,0.22); }
+  100% { box-shadow: 0 0 0 0 rgba(232,184,0,0); }
+}
+.podium-glow { animation: podium-shine 2.6s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .wave-track, .swim-fish, .row-anim, .podium-glow { animation: none !important; }
+}
 `;
