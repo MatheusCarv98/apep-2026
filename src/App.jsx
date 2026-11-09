@@ -1,15 +1,10 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   Fish, Trophy, Medal, Users, Calendar, Plus, Trash2, ChevronRight,
-  Anchor, Waves, Award, Scale, X, Loader2, Check, AlertTriangle, Lock, LockOpen, TrendingUp, Weight,
-  Camera, FileDown, User
+  Anchor, Waves, Award, Scale, X, Loader2, Check, AlertTriangle, Lock, LockOpen,
+  Home, History as HistoryIcon, LogIn, LogOut, Pencil, UserPlus, UserMinus,
+  Newspaper, Crown, RefreshCw, ShieldAlert
 } from "lucide-react";
-import {
-  LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
-} from "recharts";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
-import { supabase } from "./supabaseClient";
 
 /* ---------------------------------------------------------------
    TABELA COSAPYL — pontuação por posição (1ª a 30ª colocação)
@@ -38,115 +33,176 @@ const LOGO_SRC = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAANwAAADcCAYAAAAb
 const STORAGE_KEY = "apep-2026-dados";
 
 function emptyEntry() {
-  return { adimplente: true, raia: "", peso: "", quantidade: "", maiorPeixe: "", peixesExoticos: "", papaTerra: false, papaTerraPeso: "" };
+  return { adimplente: true, raia: "", peso: "", quantidade: "", maiorPeixe: "", papaTerra: false, papaTerraPeso: "" };
 }
 
 function fmt(n, d = 3) {
   if (n === null || n === undefined || isNaN(n)) return "—";
   return Number(n).toLocaleString("pt-BR", { minimumFractionDigits: d, maximumFractionDigits: d });
 }
-function fmtInt(n) {
-  if (n === null || n === undefined || isNaN(n)) return "0";
-  return Number(n).toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
-}
 function fmtPts(n) {
   if (n === null || n === undefined || isNaN(n)) return "—";
   return Number(n).toLocaleString("pt-BR", { minimumFractionDigits: 4, maximumFractionDigits: 4 });
 }
 
-function fmtData(iso) {
-  if (!iso) return "";
-  const [ano, mes, dia] = iso.split("-");
-  if (!ano || !mes || !dia) return iso;
-  return `${dia}/${mes}/${ano}`;
-}
-function etapaTitulo(n, etapasInfo) {
-  const info = etapasInfo && etapasInfo[n];
-  if (!info || (!info.local && !info.data)) return `Etapa ${n}`;
-  const partes = [info.local, info.data ? fmtData(info.data) : null].filter(Boolean);
-  return `Etapa ${n} — ${partes.join(" · ")}`;
-}
-
 const ADMIN_PIN = "APEP2026";
 
-function resizeImageFile(file, size = 240) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = reject;
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = reject;
-      img.onload = () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext("2d");
-        const lado = Math.min(img.width, img.height);
-        const sx = (img.width - lado) / 2;
-        const sy = (img.height - lado) / 2;
-        ctx.drawImage(img, sx, sy, lado, lado, 0, 0, size, size);
-        resolve(canvas.toDataURL("image/jpeg", 0.82));
-      };
-      img.src = reader.result;
-    };
-    reader.readAsDataURL(file);
-  });
+/* ---------------------------------------------------------------
+   HISTÓRICO (quem entrou / o que foi alterado)
+--------------------------------------------------------------- */
+const HIST_KEY = "apep-2026-historico";
+const HIST_MAX = 500;
+const RESTRITAS = ["pescadores", "etapa", "historico"];
+const CAMPO_LABEL = {
+  adimplente: "Adimplente",
+  raia: "Raia",
+  peso: "Peso total",
+  quantidade: "Qtd. de peixes",
+  maiorPeixe: "Maior peixe",
+  papaTerra: "Papa-terra",
+  papaTerraPeso: "Peso do papa-terra",
+};
+function fmtValor(campo, v) {
+  if (typeof v === "boolean") return v ? "Sim" : "Não";
+  if (v === "" || v === undefined || v === null) return "—";
+  if (campo === "peso" || campo === "maiorPeixe" || campo === "papaTerraPeso") return `${v} kg`;
+  return String(v);
+}
+function mesclarHistorico(remoto, local) {
+  const mapa = new Map();
+  (remoto || []).forEach((e) => mapa.set(e.id, e));
+  (local || []).forEach((e) => mapa.set(e.id, e));
+  return [...mapa.values()].sort((a, b) => b.ts - a.ts).slice(0, HIST_MAX);
 }
 
-function CountUp({ value, decimals = 3, duration = 900, suffix = "" }) {
-  const [display, setDisplay] = useState(0);
-  const alvo = Number(value) || 0;
+/* ---------------------------------------------------------------
+   NOTÍCIAS / DESTAQUES (geradas automaticamente a partir dos dados)
+--------------------------------------------------------------- */
+const CAT_TXT = { M: "masculino", F: "feminino" };
+function plural(n, s, p) {
+  return n === 1 ? s : p;
+}
+function num(v) {
+  if (v === "" || v === undefined || v === null) return 0;
+  return parseFloat(v) || 0;
+}
 
-  useEffect(() => {
-    let frame;
-    const inicio = performance.now();
-    const de = display;
-    function passo(agora) {
-      const t = Math.min(1, (agora - inicio) / duration);
-      const ease = 1 - Math.pow(1 - t, 3);
-      setDisplay(de + (alvo - de) * ease);
-      if (t < 1) frame = requestAnimationFrame(passo);
+function gerarNoticias({ etapas, pescadores, rankingEtapa, classificacaoGeral }) {
+  const out = [];
+  const porId = {};
+  pescadores.forEach((p) => (porId[p.id] = p));
+  let ultima = 0;
+
+  for (let n = 1; n <= N_ETAPAS; n++) {
+    const rk = { M: rankingEtapa(n, "M"), F: rankingEtapa(n, "F") };
+    const participantes = rk.M.length + rk.F.length;
+    if (participantes === 0) continue;
+    ultima = n;
+
+    // --- campeões da etapa (um por categoria) ---
+    ["M", "F"].forEach((cat, i) => {
+      const lista = rk[cat];
+      if (!lista.length) return;
+      const fem = cat === "F";
+      const [p1, p2, p3] = lista;
+      let texto = `Com ${fmt(p1.peso)} kg na balança, ${p1.pescador.nome} garantiu o primeiro lugar da Etapa ${n} no ${CAT_TXT[cat]} e somou ${fmtPts(p1.pontos)} pontos na tabela COSAPYL.`;
+      if (p2) {
+        const dif = p1.peso - p2.peso;
+        texto += dif > 0
+          ? ` Abriu ${fmt(dif)} kg de vantagem sobre ${p2.pescador.nome}, ${fem ? "segunda colocada" : "segundo colocado"}.`
+          : ` Venceu no critério de desempate contra ${p2.pescador.nome}.`;
+      }
+      if (p3) texto += ` Completa o pódio ${p3.pescador.nome}, com ${fmt(p3.peso)} kg.`;
+      if (p1.quantidade > 0) texto += ` Foram ${p1.quantidade} ${plural(p1.quantidade, "peixe", "peixes")} no total.`;
+      if (p1.maiorPeixe > 0) texto += ` Seu maior exemplar pesou ${fmt(p1.maiorPeixe)} kg.`;
+      out.push({
+        id: `n${n}-campeao-${cat}`, etapa: n, tipo: "campeao", prio: 1 + i, cat,
+        tag: `Etapa ${n} · ${CATS[cat].label}`,
+        titulo: `${p1.pescador.nome} vence a Etapa ${n} no ${CAT_TXT[cat]}`,
+        texto,
+        chips: [`${fmt(p1.peso)} kg`, `${fmtPts(p1.pontos)} pts`, `${lista.length} ${plural(lista.length, "pescador", "pescadores")}`],
+      });
+    });
+
+    // --- recordes da etapa (considera todos os lançamentos, como na aba Prêmios) ---
+    const entradas = Object.entries(etapas[n] || {})
+      .map(([id, e]) => ({ p: porId[id], e }))
+      .filter((x) => x.p && x.e);
+    const top = (getter) =>
+      entradas.map((x) => ({ ...x, v: getter(x.e) })).filter((x) => x.v > 0).sort((a, b) => b.v - a.v);
+
+    const peixes = top((e) => num(e.maiorPeixe));
+    if (peixes.length) {
+      const [a, b] = peixes;
+      out.push({
+        id: `n${n}-peixe`, etapa: n, tipo: "peixe", prio: 3, cat: a.p.categoria,
+        tag: `Etapa ${n} · Maior peixe`,
+        titulo: `${a.p.nome} crava o maior peixe da Etapa ${n}`,
+        texto: `Um exemplar de ${fmt(a.v)} kg foi o maior fisgado na etapa, pescado por ${a.p.nome} (${CATS[a.p.categoria].label}).` +
+          (b ? ` O segundo maior, de ${fmt(b.v)} kg, foi de ${b.p.nome}.` : ""),
+        chips: [`${fmt(a.v)} kg`],
+      });
     }
-    frame = requestAnimationFrame(passo);
-    return () => cancelAnimationFrame(frame);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [alvo, duration]);
 
-  return (
-    <>
-      {display.toLocaleString("pt-BR", { minimumFractionDigits: decimals, maximumFractionDigits: decimals })}
-      {suffix}
-    </>
-  );
-}
+    const papas = top((e) => (e.papaTerra ? num(e.papaTerraPeso) : 0));
+    if (papas.length) {
+      const [a, b] = papas;
+      out.push({
+        id: `n${n}-papa`, etapa: n, tipo: "papa", prio: 4, cat: a.p.categoria,
+        tag: `Etapa ${n} · Papa-terra`,
+        titulo: `${a.p.nome} leva o papa-terra da Etapa ${n}`,
+        texto: `O maior papa-terra (betara) da etapa pesou ${fmt(a.v)} kg e foi fisgado por ${a.p.nome} (${CATS[a.p.categoria].label}).` +
+          (b ? ` Logo atrás, ${b.p.nome} trouxe um de ${fmt(b.v)} kg.` : ""),
+        chips: [`${fmt(a.v)} kg`],
+      });
+    }
 
-function Avatar({ foto, nome, size = 40, cor = "#0B5E22" }) {
-  if (foto) {
-    return (
-      <img
-        src={foto}
-        alt={nome}
-        style={{ width: size, height: size, borderRadius: "50%", objectFit: "cover", flexShrink: 0, border: "1px solid #EDE8D9", display: "block", verticalAlign: "middle" }}
-      />
-    );
+    const qtds = top((e) => num(e.quantidade));
+    if (qtds.length) {
+      const [a, b] = qtds;
+      out.push({
+        id: `n${n}-qtd`, etapa: n, tipo: "qtd", prio: 5, cat: a.p.categoria,
+        tag: `Etapa ${n} · Quantidade`,
+        titulo: `${a.p.nome} é quem mais pescou na Etapa ${n}`,
+        texto: `${a.p.nome} fisgou ${a.v} ${plural(a.v, "peixe", "peixes")}, o maior número da etapa.` +
+          (b ? ` Em seguida vem ${b.p.nome}, com ${b.v}.` : ""),
+        chips: [`${a.v} ${plural(a.v, "peixe", "peixes")}`],
+      });
+    }
+
+    // --- balanço da etapa ---
+    const todos = [...rk.M, ...rk.F];
+    const pesoTotal = todos.reduce((t, r) => t + r.peso, 0);
+    const qtdTotal = todos.reduce((t, r) => t + r.quantidade, 0);
+    out.push({
+      id: `n${n}-resumo`, etapa: n, tipo: "resumo", prio: 8, cat: null,
+      tag: `Etapa ${n} · Balanço`,
+      titulo: `Etapa ${n} reúne ${participantes} ${plural(participantes, "pescador", "pescadores")} e ${fmt(pesoTotal, 2)} kg de pescado`,
+      texto: `A etapa contou com ${rk.M.length} ${plural(rk.M.length, "pescador", "pescadores")} no masculino e ${rk.F.length} no feminino, com média de ${fmt(pesoTotal / participantes)} kg por pescador` +
+        (qtdTotal > 0 ? ` e ${qtdTotal} ${plural(qtdTotal, "peixe capturado", "peixes capturados")} ao todo.` : "."),
+      chips: [`${fmt(pesoTotal, 2)} kg`, `${participantes} ${plural(participantes, "pescador", "pescadores")}`],
+    });
   }
-  const iniciais = (nome || "?")
-    .trim()
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((w) => w[0]?.toUpperCase())
-    .join("");
-  return (
-    <div
-      style={{
-        width: size, height: size, borderRadius: "50%", flexShrink: 0,
-        background: `${cor}1A`, color: cor, display: "flex", alignItems: "center", justifyContent: "center",
-        fontFamily: "'Fraunces', serif", fontWeight: 700, fontSize: size * 0.38, boxSizing: "border-box",
-      }}
-    >
-      {iniciais || <User size={size * 0.5} />}
-    </div>
-  );
+
+  // --- liderança do campeonato (fica junto da última etapa realizada) ---
+  if (ultima > 0) {
+    ["M", "F"].forEach((cat, i) => {
+      const l = (classificacaoGeral[cat] || []).filter((x) => x.nEtapas > 0);
+      if (!l.length) return;
+      const [a, b] = l;
+      out.push({
+        id: `lider-${cat}`, etapa: ultima, tipo: "lider", prio: 6 + i, cat,
+        tag: `Classificação geral · ${CATS[cat].label}`,
+        titulo: `${a.pescador.nome} lidera o campeonato no ${CAT_TXT[cat]}`,
+        texto: `${a.pescador.nome} soma ${fmtPts(a.total)} pontos em ${a.nEtapas} ${plural(a.nEtapas, "etapa disputada", "etapas disputadas")}` +
+          (b ? `, ${fmtPts(a.total - b.total)} ${plural(a.total - b.total, "ponto", "pontos")} à frente de ${b.pescador.nome}.` : "."),
+        chips: [`${fmtPts(a.total)} pts`, `${a.nEtapas}/${N_ETAPAS} etapas`],
+      });
+    });
+  }
+
+  out.sort((x, y) => y.etapa - x.etapa || x.prio - y.prio);
+  return out;
 }
 
 export default function ApepApp() {
@@ -158,12 +214,7 @@ export default function ApepApp() {
     for (let i = 1; i <= N_ETAPAS; i++) obj[i] = {};
     return obj;
   });
-  const [etapasInfo, setEtapasInfo] = useState(() => {
-    const obj = {};
-    for (let i = 1; i <= N_ETAPAS; i++) obj[i] = { local: "", data: "" };
-    return obj;
-  });
-  const [tab, setTab] = useState("classificacao");
+  const [tab, setTab] = useState("inicio");
   const [catAtual, setCatAtual] = useState("M");
   const [etapaAtual, setEtapaAtual] = useState(1);
   const [novoNome, setNovoNome] = useState("");
@@ -173,28 +224,32 @@ export default function ApepApp() {
   const [showLogin, setShowLogin] = useState(false);
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState(false);
+  const [nomeInput, setNomeInput] = useState("");
+  const [nomeError, setNomeError] = useState(false);
+  const [adminNome, setAdminNome] = useState("");
+  const [historico, setHistorico] = useState([]);
+  const histSujo = useRef(false);
 
   // ---- load ----
   useEffect(() => {
     (async () => {
       try {
-        const { data, error } = await supabase
-          .from("apep_dados")
-          .select("pescadores, etapas, etapas_info")
-          .eq("id", "atual")
-          .maybeSingle();
-        if (error) throw error;
-        if (data) {
+        const res = await window.storage.get(STORAGE_KEY, true);
+        if (res && res.value) {
+          const data = JSON.parse(res.value);
           setPescadores(data.pescadores || []);
           const obj = {};
           for (let i = 1; i <= N_ETAPAS; i++) obj[i] = (data.etapas && data.etapas[i]) || {};
           setEtapas(obj);
-          const info = {};
-          for (let i = 1; i <= N_ETAPAS; i++) info[i] = (data.etapas_info && data.etapas_info[i]) || { local: "", data: "" };
-          setEtapasInfo(info);
         }
       } catch (e) {
-        console.error("Falha ao carregar", e);
+        // no data yet
+      }
+      try {
+        const h = await window.storage.get(HIST_KEY, true);
+        if (h && h.value) setHistorico(JSON.parse(h.value));
+      } catch (e) {
+        // sem histórico ainda
       } finally {
         setLoaded(true);
       }
@@ -202,21 +257,16 @@ export default function ApepApp() {
   }, []);
 
   // ---- save (debounced) ----
-  const persist = useCallback((nextPescadores, nextEtapas, nextEtapasInfo) => {
+  const persist = useCallback((nextPescadores, nextEtapas) => {
     setSaving(true);
     clearTimeout(persist._t);
     persist._t = setTimeout(async () => {
       try {
-        const { error } = await supabase
-          .from("apep_dados")
-          .upsert({
-            id: "atual",
-            pescadores: nextPescadores,
-            etapas: nextEtapas,
-            etapas_info: nextEtapasInfo,
-            updated_at: new Date().toISOString(),
-          });
-        if (error) throw error;
+        await window.storage.set(
+          STORAGE_KEY,
+          JSON.stringify({ pescadores: nextPescadores, etapas: nextEtapas }),
+          true
+        );
       } catch (e) {
         console.error("Falha ao salvar", e);
       } finally {
@@ -227,16 +277,59 @@ export default function ApepApp() {
 
   useEffect(() => {
     if (!loaded) return;
-    persist(pescadores, etapas, etapasInfo);
-  }, [pescadores, etapas, etapasInfo, loaded, persist]);
+    persist(pescadores, etapas);
+  }, [pescadores, etapas, loaded, persist]);
+
+  // ---- histórico: registrar, salvar (mesclando com o que já existe) e recarregar ----
+  function registrarLog(ev, chaveAgrupar, usuario) {
+    const user = usuario || adminNome || "—";
+    const agora = Date.now();
+    histSujo.current = true;
+    setHistorico((prev) => {
+      const ultimo = prev[0];
+      // várias digitações seguidas no mesmo campo viram uma única linha (antes → depois)
+      if (chaveAgrupar && ultimo && ultimo.chave === chaveAgrupar && ultimo.user === user && agora - ultimo.ts < 60000) {
+        return [{ ...ultimo, ts: agora, depois: ev.depois }, ...prev.slice(1)];
+      }
+      const id = "h_" + agora + "_" + Math.random().toString(36).slice(2, 7);
+      return [{ id, ts: agora, user, chave: chaveAgrupar || null, ...ev }, ...prev].slice(0, HIST_MAX);
+    });
+  }
+
+  useEffect(() => {
+    if (!loaded || !histSujo.current) return;
+    const t = setTimeout(async () => {
+      try {
+        let remoto = [];
+        try {
+          const r = await window.storage.get(HIST_KEY, true);
+          if (r && r.value) remoto = JSON.parse(r.value);
+        } catch (e) {
+          // ainda não existe
+        }
+        await window.storage.set(HIST_KEY, JSON.stringify(mesclarHistorico(remoto, historico)), true);
+        histSujo.current = false;
+      } catch (e) {
+        console.error("Falha ao salvar histórico", e);
+      }
+    }, 600);
+    return () => clearTimeout(t);
+  }, [historico, loaded]);
+
+  async function recarregarHistorico() {
+    let remoto = [];
+    try {
+      const r = await window.storage.get(HIST_KEY, true);
+      if (r && r.value) remoto = JSON.parse(r.value);
+    } catch (e) {
+      // ainda não existe
+    }
+    setHistorico((prev) => mesclarHistorico(remoto, prev));
+  }
 
   function showToast(msg) {
     setToast(msg);
     setTimeout(() => setToast(null), 2200);
-  }
-
-  function updateEtapaInfo(n, campo, valor) {
-    setEtapasInfo((prev) => ({ ...prev, [n]: { ...prev[n], [campo]: valor } }));
   }
 
   // ---- salvar manualmente (imediato, sem debounce) ----
@@ -244,17 +337,13 @@ export default function ApepApp() {
     clearTimeout(persist._t);
     setSaving(true);
     try {
-      const { error } = await supabase
-        .from("apep_dados")
-        .upsert({
-          id: "atual",
-          pescadores,
-          etapas,
-          etapas_info: etapasInfo,
-          updated_at: new Date().toISOString(),
-        });
-      if (error) throw error;
+      await window.storage.set(
+        STORAGE_KEY,
+        JSON.stringify({ pescadores, etapas }),
+        true
+      );
       showToast("Dados salvos com sucesso!");
+      registrarLog({ tipo: "salvar", texto: "Salvou os dados manualmente" });
     } catch (e) {
       console.error("Falha ao salvar", e);
       showToast("Erro ao salvar. Tente novamente.");
@@ -264,23 +353,42 @@ export default function ApepApp() {
   }
 
   function tryLogin() {
+    const nome = nomeInput.trim();
+    if (nome.length < 2) {
+      setNomeError(true);
+      return;
+    }
     if (pinInput === ADMIN_PIN) {
       setIsAdmin(true);
+      setAdminNome(nome);
       setShowLogin(false);
       setPinInput("");
+      setNomeInput("");
       setPinError(false);
-      showToast("Área da diretoria liberada");
+      setNomeError(false);
+      registrarLog({ tipo: "login", texto: "Entrou na área da diretoria" }, null, nome);
+      showToast(`Bem-vindo(a), ${nome}`);
     } else {
       setPinError(true);
+      registrarLog({ tipo: "login_falho", texto: "Tentativa de acesso com senha incorreta" }, null, nome);
     }
   }
   function logout() {
+    registrarLog({ tipo: "logout", texto: "Saiu da área da diretoria" });
     setIsAdmin(false);
-    if (tab === "pescadores" || tab === "etapa") setTab("classificacao");
+    setAdminNome("");
+    if (RESTRITAS.includes(tab)) setTab("inicio");
     showToast("Saiu da área da diretoria");
   }
+  function fecharLogin() {
+    setShowLogin(false);
+    setPinInput("");
+    setNomeInput("");
+    setPinError(false);
+    setNomeError(false);
+  }
   function goTab(id) {
-    if ((id === "pescadores" || id === "etapa") && !isAdmin) {
+    if (RESTRITAS.includes(id) && !isAdmin) {
       setShowLogin(true);
       return;
     }
@@ -294,9 +402,12 @@ export default function ApepApp() {
     const id = "p_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
     setPescadores((prev) => [...prev, { id, nome, categoria: novoCat }]);
     setNovoNome("");
+    registrarLog({ tipo: "pescador_add", texto: `Cadastrou ${nome} (${CATS[novoCat].label})` });
     showToast(`${nome} adicionado(a)`);
   }
   function removePescador(id) {
+    const alvo = pescadores.find((x) => x.id === id);
+    if (alvo) registrarLog({ tipo: "pescador_del", texto: `Removeu ${alvo.nome} (${CATS[alvo.categoria].label}) e todos os lançamentos` });
     setPescadores((prev) => prev.filter((p) => p.id !== id));
     setEtapas((prev) => {
       const next = {};
@@ -307,17 +418,21 @@ export default function ApepApp() {
       return next;
     });
   }
-  async function updatePescadorFoto(id, file) {
-    try {
-      const dataUrl = await resizeImageFile(file, 240);
-      setPescadores((prev) => prev.map((p) => (p.id === id ? { ...p, foto: dataUrl } : p)));
-    } catch (e) {
-      console.error("Falha ao processar foto", e);
-      showToast("Não foi possível carregar essa imagem.");
-    }
-  }
 
   function updateEntry(etapa, pescadorId, field, value) {
+    const atual = { ...emptyEntry(), ...((etapas[etapa] || {})[pescadorId] || {}) };
+    if (atual[field] === value) return;
+    const alvo = pescadores.find((x) => x.id === pescadorId);
+    registrarLog(
+      {
+        tipo: "edicao",
+        texto: `Etapa ${etapa} · ${alvo ? alvo.nome : "pescador removido"} — ${CAMPO_LABEL[field] || field}`,
+        campo: field,
+        antes: atual[field],
+        depois: value,
+      },
+      `${etapa}|${pescadorId}|${field}`
+    );
     setEtapas((prev) => {
       const etapaData = { ...(prev[etapa] || {}) };
       const entry = { ...emptyEntry(), ...(etapaData[pescadorId] || {}) };
@@ -337,18 +452,14 @@ export default function ApepApp() {
     const lista = pescadoresPorCat(cat)
       .map((p) => {
         const e = (etapas[etapa] || {})[p.id];
-        const pesoDeclarado = e && e.peso !== "" ? parseFloat(e.peso) : null;
-        const qtdExoticos = e && e.peixesExoticos !== "" ? parseFloat(e.peixesExoticos) : 0;
-        const bonusExoticos = (qtdExoticos || 0) * 0.5;
-        const pesoTotal = pesoDeclarado !== null ? pesoDeclarado + bonusExoticos : null;
+        const peso = e && e.peso !== "" ? parseFloat(e.peso) : null;
         return {
           pescador: p,
           entry: e || null,
-          peso: e && e.adimplente && pesoTotal !== null && pesoTotal > 0 ? pesoTotal : null,
+          peso: e && e.adimplente && peso !== null && peso > 0 ? peso : null,
           adimplente: e ? e.adimplente : true,
           maiorPeixe: e && e.maiorPeixe !== "" ? parseFloat(e.maiorPeixe) : 0,
           quantidade: e && e.quantidade !== "" ? parseFloat(e.quantidade) : 0,
-          peixesExoticos: qtdExoticos || 0,
         };
       })
       .filter((r) => r.peso !== null);
@@ -368,20 +479,12 @@ export default function ApepApp() {
     ["F", "M"].forEach((cat) => {
       const porPescador = {};
       pescadoresPorCat(cat).forEach((p) => {
-        porPescador[p.id] = { pescador: p, etapaPontos: {}, etapaDetalhe: {}, maiorPeixeTemp: 0, qtdTemp: 0, papaTerraTemp: 0 };
+        porPescador[p.id] = { pescador: p, etapaPontos: {}, maiorPeixeTemp: 0, qtdTemp: 0, papaTerraTemp: 0 };
       });
       for (let et = 1; et <= N_ETAPAS; et++) {
         const rk = rankingEtapa(et, cat);
         rk.forEach((r) => {
           porPescador[r.pescador.id].etapaPontos[et] = r.pontos;
-          porPescador[r.pescador.id].etapaDetalhe[et] = {
-            peso: r.peso,
-            quantidade: r.quantidade,
-            maiorPeixe: r.maiorPeixe,
-            peixesExoticos: r.peixesExoticos,
-            pos: r.pos,
-            pontos: r.pontos,
-          };
         });
         // season totals (todas etapas, mesmo descartadas contam p/ prêmios especiais)
         Object.values((etapas[et] || {})).forEach((e, i) => {});
@@ -394,14 +497,6 @@ export default function ApepApp() {
           if (mp > porPescador[p.id].maiorPeixeTemp) porPescador[p.id].maiorPeixeTemp = mp;
           porPescador[p.id].qtdTemp += qt || 0;
           if (pt > porPescador[p.id].papaTerraTemp) porPescador[p.id].papaTerraTemp = pt;
-          const pesoEtapaKg = e.peso !== "" ? parseFloat(e.peso) : 0;
-          const exoticosEtapa = e.peixesExoticos !== "" ? parseFloat(e.peixesExoticos) : 0;
-          porPescador[p.id].pesoTemp = (porPescador[p.id].pesoTemp || 0) + (pesoEtapaKg || 0) + (exoticosEtapa || 0) * 0.5;
-          if (porPescador[p.id].etapaDetalhe[et]) {
-            porPescador[p.id].etapaDetalhe[et].papaTerra = !!e.papaTerra;
-            porPescador[p.id].etapaDetalhe[et].papaTerraPeso = pt;
-            porPescador[p.id].etapaDetalhe[et].adimplente = e.adimplente;
-          }
         });
       }
       const linhas = Object.values(porPescador).map((row) => {
@@ -444,33 +539,31 @@ export default function ApepApp() {
     return out;
   }, [classificacaoGeral]);
 
-  const totalKgGeral = useMemo(() => {
-    let total = 0;
-    ["F", "M"].forEach((cat) => {
-      for (let et = 1; et <= N_ETAPAS; et++) {
-        pescadoresPorCat(cat).forEach((p) => {
-          const e = (etapas[et] || {})[p.id];
-          if (!e) return;
-          const pesoDeclarado = e.peso !== "" ? parseFloat(e.peso) : 0;
-          const qtdExoticos = e.peixesExoticos !== "" ? parseFloat(e.peixesExoticos) : 0;
-          const bonus = (qtdExoticos || 0) * 0.5;
-          total += (pesoDeclarado || 0) + bonus;
-        });
-      }
-    });
-    return total;
-  }, [pescadores, etapas]);
+  const noticias = useMemo(
+    () => gerarNoticias({ etapas, pescadores, rankingEtapa, classificacaoGeral }),
+    [etapas, pescadores, classificacaoGeral]
+  );
 
-  const proximaEtapa = useMemo(() => {
-    for (let et = 1; et <= N_ETAPAS; et++) {
-      const temResultado = pescadores.some((p) => {
-        const e = (etapas[et] || {})[p.id];
-        return e && e.peso !== "" && parseFloat(e.peso) > 0;
-      });
-      if (!temResultado) return { n: et, ...(etapasInfo[et] || { local: "", data: "" }) };
+  const resumoTemporada = useMemo(() => {
+    let etapasFeitas = 0;
+    let pesoTotal = 0;
+    for (let n = 1; n <= N_ETAPAS; n++) {
+      const rk = [...rankingEtapa(n, "M"), ...rankingEtapa(n, "F")];
+      if (rk.length) etapasFeitas++;
+      pesoTotal += rk.reduce((t, r) => t + r.peso, 0);
     }
-    return null;
-  }, [pescadores, etapas, etapasInfo]);
+    const candidatos = ["M", "F"]
+      .map((c) => premiosEspeciais[c]?.maiorPeixe)
+      .filter(Boolean)
+      .sort((a, b) => b.maiorPeixeTemp - a.maiorPeixeTemp);
+    const mp = candidatos[0];
+    return {
+      etapasFeitas,
+      pescadores: pescadores.length,
+      pesoTotal,
+      maiorPeixe: mp ? { v: mp.maiorPeixeTemp, nome: mp.pescador.nome } : null,
+    };
+  }, [etapas, pescadores, premiosEspeciais]);
 
   if (!loaded) {
     return (
@@ -486,7 +579,7 @@ export default function ApepApp() {
   return (
     <div style={S.page}>
       <style>{CSS}</style>
-      <Header saving={saving} isAdmin={isAdmin} onLock={() => (isAdmin ? logout() : setShowLogin(true))} />
+      <Header saving={saving} isAdmin={isAdmin} adminNome={adminNome} onLock={() => (isAdmin ? logout() : setShowLogin(true))} />
       <Tabs tab={tab} setTab={goTab} isAdmin={isAdmin} />
 
       <div style={{ padding: "0 16px 40px", maxWidth: 1040, margin: "0 auto" }}>
@@ -499,7 +592,6 @@ export default function ApepApp() {
             setNovoCat={setNovoCat}
             addPescador={addPescador}
             removePescador={removePescador}
-            updatePescadorFoto={updatePescadorFoto}
           />
         )}
 
@@ -511,8 +603,6 @@ export default function ApepApp() {
             setCatAtual={setCatAtual}
             pescadores={pescadoresPorCat(catAtual)}
             etapas={etapas}
-            etapasInfo={etapasInfo}
-            updateEtapaInfo={updateEtapaInfo}
             updateEntry={updateEntry}
             ranking={rankingEtapa(etapaAtual, catAtual)}
             onSalvar={salvarAgora}
@@ -520,24 +610,16 @@ export default function ApepApp() {
           />
         )}
 
+        {tab === "inicio" && <InicioTab noticias={noticias} resumo={resumoTemporada} irPara={goTab} />}
+
         {tab === "classificacao" && (
-          <ClassificacaoTab catAtual={catAtual} setCatAtual={setCatAtual} linhas={classificacaoGeral[catAtual] || []} totalKgGeral={totalKgGeral} proximaEtapa={proximaEtapa} etapasInfo={etapasInfo} />
+          <ClassificacaoTab catAtual={catAtual} setCatAtual={setCatAtual} linhas={classificacaoGeral[catAtual] || []} rankingEtapa={rankingEtapa} />
         )}
 
-        {tab === "evolucao" && (
-          <EvolucaoTab
-            catAtual={catAtual}
-            setCatAtual={setCatAtual}
-            pescadores={pescadoresPorCat(catAtual)}
-            etapas={etapas}
-            etapasInfo={etapasInfo}
-            classificacaoGeral={classificacaoGeral[catAtual] || []}
-            rankingEtapa={rankingEtapa}
-          />
-        )}
+        {tab === "historico" && isAdmin && <HistoricoTab historico={historico} onRecarregar={recarregarHistorico} />}
 
         {tab === "premios" && (
-          <PremiosTab catAtual={catAtual} setCatAtual={setCatAtual} premios={premiosEspeciais[catAtual]} etapas={etapas} pescadores={pescadores} rankingEtapa={rankingEtapa} etapasInfo={etapasInfo} />
+          <PremiosTab catAtual={catAtual} setCatAtual={setCatAtual} premios={premiosEspeciais[catAtual]} etapas={etapas} pescadores={pescadores} rankingEtapa={rankingEtapa} />
         )}
       </div>
 
@@ -549,23 +631,24 @@ export default function ApepApp() {
 
       {showLogin && (
         <LoginModal
+          nomeInput={nomeInput}
+          setNomeInput={setNomeInput}
+          nomeError={nomeError}
+          setNomeError={setNomeError}
           pinInput={pinInput}
           setPinInput={setPinInput}
           pinError={pinError}
           setPinError={setPinError}
           onConfirm={tryLogin}
-          onClose={() => {
-            setShowLogin(false);
-            setPinInput("");
-            setPinError(false);
-          }}
+          onClose={fecharLogin}
         />
       )}
     </div>
   );
 }
 
-function LoginModal({ pinInput, setPinInput, pinError, setPinError, onConfirm, onClose }) {
+function LoginModal({ nomeInput, setNomeInput, nomeError, setNomeError, pinInput, setPinInput, pinError, setPinError, onConfirm, onClose }) {
+  const erroStyle = { display: "flex", alignItems: "center", gap: 5, color: "#c04a4a", fontFamily: S.fonts.body, fontSize: 12.5, marginTop: 8, justifyContent: "center" };
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.modalCard} onClick={(e) => e.stopPropagation()}>
@@ -579,8 +662,26 @@ function LoginModal({ pinInput, setPinInput, pinError, setPinError, onConfirm, o
           Área da Diretoria
         </div>
         <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, color: "#7c8a8e", textAlign: "center", marginTop: 4, marginBottom: 16 }}>
-          Digite a senha para cadastrar pescadores e lançar as etapas.
+          Informe seu nome e a senha. Seu nome fica registrado no histórico de acessos e alterações.
         </div>
+        <input
+          type="text"
+          value={nomeInput}
+          onChange={(e) => {
+            setNomeInput(e.target.value);
+            setNomeError(false);
+          }}
+          onKeyDown={(e) => e.key === "Enter" && onConfirm()}
+          placeholder="Seu nome"
+          autoFocus
+          maxLength={40}
+          style={{ ...S.input, width: "100%", boxSizing: "border-box", textAlign: "center", marginBottom: 8 }}
+        />
+        {nomeError && (
+          <div style={{ ...erroStyle, marginTop: 0, marginBottom: 8 }}>
+            <AlertTriangle size={13} /> Informe seu nome para entrar.
+          </div>
+        )}
         <input
           type="password"
           value={pinInput}
@@ -590,11 +691,10 @@ function LoginModal({ pinInput, setPinInput, pinError, setPinError, onConfirm, o
           }}
           onKeyDown={(e) => e.key === "Enter" && onConfirm()}
           placeholder="Senha da diretoria"
-          autoFocus
           style={{ ...S.input, width: "100%", boxSizing: "border-box", textAlign: "center", letterSpacing: 1 }}
         />
         {pinError && (
-          <div style={{ display: "flex", alignItems: "center", gap: 5, color: "#c04a4a", fontFamily: S.fonts.body, fontSize: 12.5, marginTop: 8, justifyContent: "center" }}>
+          <div style={erroStyle}>
             <AlertTriangle size={13} /> Senha incorreta.
           </div>
         )}
@@ -608,7 +708,7 @@ function LoginModal({ pinInput, setPinInput, pinError, setPinError, onConfirm, o
 
 /* ================= HEADER / TABS ================= */
 
-function Header({ saving, isAdmin, onLock }) {
+function Header({ saving, isAdmin, adminNome, onLock }) {
   return (
     <div style={S.header}>
       <div style={{ maxWidth: 1040, margin: "0 auto", padding: "22px 16px 18px", position: "relative" }}>
@@ -628,7 +728,7 @@ function Header({ saving, isAdmin, onLock }) {
         <div style={{ position: "absolute", right: 16, top: 20, display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
           <button onClick={onLock} style={{ ...S.lockBtn, ...(isAdmin ? S.lockBtnActive : {}) }}>
             {isAdmin ? <LockOpen size={12} /> : <Lock size={12} />}
-            {isAdmin ? "Diretoria" : "Entrar"}
+            {isAdmin ? `Diretoria · ${(adminNome || "").split(" ")[0]}` : "Entrar"}
           </button>
           <div style={{ fontFamily: S.fonts.body, fontSize: 11, color: "rgba(240,236,224,0.55)", display: "flex", alignItems: "center", gap: 5 }}>
             {saving ? (
@@ -643,27 +743,6 @@ function Header({ saving, isAdmin, onLock }) {
           </div>
         </div>
         <Waves size={220} style={{ position: "absolute", right: -30, bottom: -46, opacity: 0.08, color: S.colors.cream }} />
-
-        <Fish size={22} className="swim-fish" style={{ color: "rgba(240,246,236,0.5)" }} />
-
-        <div className="wave-layer">
-          <div className="wave-track wave-slow">
-            <svg viewBox="0 0 600 60" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M0,30 C100,60 200,0 300,30 C400,60 500,0 600,30 L600,60 L0,60 Z" fill="rgba(240,246,236,0.10)" />
-            </svg>
-            <svg viewBox="0 0 600 60" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M0,30 C100,60 200,0 300,30 C400,60 500,0 600,30 L600,60 L0,60 Z" fill="rgba(240,246,236,0.10)" />
-            </svg>
-          </div>
-          <div className="wave-track">
-            <svg viewBox="0 0 600 60" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M0,36 C120,6 240,66 360,36 C440,16 520,50 600,30 L600,60 L0,60 Z" fill="rgba(240,246,236,0.16)" />
-            </svg>
-            <svg viewBox="0 0 600 60" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-              <path d="M0,36 C120,6 240,66 360,36 C440,16 520,50 600,30 L600,60 L0,60 Z" fill="rgba(240,246,236,0.16)" />
-            </svg>
-          </div>
-        </div>
       </div>
     </div>
   );
@@ -671,11 +750,12 @@ function Header({ saving, isAdmin, onLock }) {
 
 function Tabs({ tab, setTab, isAdmin }) {
   const items = [
+    { id: "inicio", label: "Início", icon: Home },
     { id: "classificacao", label: "Classificação", icon: Trophy },
-    { id: "evolucao", label: "Evolução", icon: TrendingUp },
     { id: "premios", label: "Prêmios", icon: Award },
     { id: "etapa", label: "Lançar Etapa", icon: Scale, restrito: true },
     { id: "pescadores", label: "Pescadores", icon: Users, restrito: true },
+    { id: "historico", label: "Histórico", icon: HistoryIcon, restrito: true },
   ];
   return (
     <div style={S.tabsWrap}>
@@ -721,10 +801,10 @@ function CatSwitch({ cat, setCat }) {
 
 /* ================= PESCADORES ================= */
 
-function PescadoresTab({ pescadores, novoNome, setNovoNome, novoCat, setNovoCat, addPescador, removePescador, updatePescadorFoto }) {
+function PescadoresTab({ pescadores, novoNome, setNovoNome, novoCat, setNovoCat, addPescador, removePescador }) {
   return (
     <div style={S.card}>
-      <SectionTitle icon={Users} title="Pescadores associados" subtitle="Cadastre os atletas para poder lançar as pesagens de cada etapa. Toque no círculo pra adicionar uma foto." />
+      <SectionTitle icon={Users} title="Pescadores associados" subtitle="Cadastre os atletas para poder lançar as pesagens de cada etapa." />
       <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
         <input
           value={novoNome}
@@ -755,24 +835,7 @@ function PescadoresTab({ pescadores, novoNome, setNovoNome, novoCat, setNovoCat,
               <div style={{ display: "grid", gap: 6 }}>
                 {lista.map((p) => (
                   <div key={p.id} style={S.rowItem}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <label style={{ position: "relative", cursor: "pointer" }} title="Trocar foto">
-                        <Avatar foto={p.foto} nome={p.nome} size={34} cor={CATS[cat].color} />
-                        <span
-                          style={{
-                            position: "absolute", bottom: -2, right: -2, width: 16, height: 16, borderRadius: "50%",
-                            background: S.colors.deep, display: "flex", alignItems: "center", justifyContent: "center", border: "1.5px solid #fff",
-                          }}
-                        >
-                          <Camera size={9} color="#fff" />
-                        </span>
-                        <input
-                          type="file" accept="image/*" style={{ display: "none" }}
-                          onChange={(e) => e.target.files[0] && updatePescadorFoto(p.id, e.target.files[0])}
-                        />
-                      </label>
-                      <span style={{ fontFamily: S.fonts.body, fontSize: 14.5, color: S.colors.deep }}>{p.nome}</span>
-                    </div>
+                    <span style={{ fontFamily: S.fonts.body, fontSize: 14.5, color: S.colors.deep }}>{p.nome}</span>
                     <button onClick={() => removePescador(p.id)} style={S.iconBtnGhost} title="Remover">
                       <Trash2 size={15} />
                     </button>
@@ -789,55 +852,25 @@ function PescadoresTab({ pescadores, novoNome, setNovoNome, novoCat, setNovoCat,
 
 /* ================= ETAPA ================= */
 
-function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores, etapas, etapasInfo, updateEtapaInfo, updateEntry, ranking, onSalvar, saving }) {
-  const infoAtual = (etapasInfo && etapasInfo[etapaAtual]) || { local: "", data: "" };
+function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores, etapas, updateEntry, ranking, onSalvar, saving }) {
   return (
     <div>
       <div style={S.card}>
-        <SectionTitle icon={Scale} title="Lançar pesagem da etapa" subtitle="Peso total em kg (ex.: 3.250). Cada peixe exótico (arraia, cação, tarpon etc.) soma +0,500kg ao peso. A posição e os pontos COSAPYL são calculados automaticamente." />
-        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 14 }}>
+        <SectionTitle icon={Scale} title="Lançar pesagem da etapa" subtitle="Peso total em kg (ex.: 3.250). A posição e os pontos COSAPYL são calculados automaticamente." />
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 18 }}>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-            {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => {
-              const info = (etapasInfo && etapasInfo[n]) || {};
-              return (
-                <button
-                  key={n}
-                  onClick={() => setEtapaAtual(n)}
-                  style={{ ...S.etapaChip, ...(etapaAtual === n ? S.etapaChipActive : {}), display: "flex", flexDirection: "column", alignItems: "flex-start", lineHeight: 1.25, minWidth: 64 }}
-                >
-                  <span>Etapa {n}</span>
-                  {info.local && (
-                    <span style={{ fontSize: 10, fontWeight: 600, opacity: 0.8, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {info.local}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
+            {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => (
+              <button
+                key={n}
+                onClick={() => setEtapaAtual(n)}
+                style={{ ...S.etapaChip, ...(etapaAtual === n ? S.etapaChipActive : {}) }}
+              >
+                Etapa {n}
+              </button>
+            ))}
           </div>
           <div style={{ marginLeft: "auto" }}>
             <CatSwitch cat={catAtual} setCat={setCatAtual} />
-          </div>
-        </div>
-
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 18, background: "#FBF9F2", border: "1px solid #EDE8D9", borderRadius: 10, padding: 12 }}>
-          <div style={{ flex: "1 1 220px" }}>
-            <label style={S.miniLabel}>Local da Etapa {etapaAtual}</label>
-            <input
-              type="text" placeholder="ex.: Barra do Cunhaú"
-              value={infoAtual.local}
-              onChange={(ev) => updateEtapaInfo(etapaAtual, "local", ev.target.value)}
-              style={{ ...S.input, width: "100%" }}
-            />
-          </div>
-          <div style={{ flex: "0 1 180px" }}>
-            <label style={S.miniLabel}>Data da Etapa {etapaAtual}</label>
-            <input
-              type="date"
-              value={infoAtual.data}
-              onChange={(ev) => updateEtapaInfo(etapaAtual, "data", ev.target.value)}
-              style={{ ...S.input, width: "100%" }}
-            />
           </div>
         </div>
 
@@ -854,7 +887,6 @@ function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores
                   <th style={S.th}>Peso total (kg)</th>
                   <th style={S.th}>Qtd. peixes</th>
                   <th style={S.th}>Maior peixe (kg)</th>
-                  <th style={S.th}>Peixes exóticos (qtd)</th>
                   <th style={S.th}>Papa-terra?</th>
                   <th style={S.th}>Peso papa-terra (kg)</th>
                 </tr>
@@ -901,14 +933,6 @@ function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores
                         />
                       </td>
                       <td style={S.td}>
-                        <input
-                          type="number" step="1" min="0" placeholder="0"
-                          value={e.peixesExoticos}
-                          onChange={(ev) => updateEntry(etapaAtual, p.id, "peixesExoticos", ev.target.value)}
-                          style={{ ...S.cellInput, width: 70 }}
-                        />
-                      </td>
-                      <td style={S.td}>
                         <input type="checkbox" checked={e.papaTerra} onChange={(ev) => updateEntry(etapaAtual, p.id, "papaTerra", ev.target.checked)} />
                       </td>
                       <td style={S.td}>
@@ -944,18 +968,12 @@ function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores
 
       {ranking.length > 0 && (
         <div style={{ ...S.card, marginTop: 16 }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
-            <SectionTitle icon={Trophy} title={`Resultado — ${etapaTitulo(etapaAtual, etapasInfo)} — ${CATS[catAtual].label}`} subtitle="Classificação pelo peso total e pontuação COSAPYL." />
-            <button onClick={() => exportarEtapaPDF(etapaAtual, catAtual, ranking, etapasInfo)} style={S.btnGhost}>
-              <FileDown size={15} style={{ marginRight: 6 }} /> Baixar PDF
-            </button>
-          </div>
+          <SectionTitle icon={Trophy} title={`Resultado da Etapa ${etapaAtual} — ${CATS[catAtual].label}`} subtitle="Classificação pelo peso total e pontuação COSAPYL." />
           <div style={{ display: "grid", gap: 6 }}>
             {ranking.map((r) => (
               <div key={r.pescador.id} style={{ ...S.rankRow, ...(r.pos <= 3 ? S.rankRowTop : {}) }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <PosicaoBadge pos={r.pos} />
-                  <Avatar foto={r.pescador.foto} nome={r.pescador.nome} size={28} cor={CATS[catAtual].color} />
                   <span style={{ fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep, fontSize: 14.5 }}>{r.pescador.nome}</span>
                 </div>
                 <div style={{ display: "flex", gap: 18, alignItems: "center", fontFamily: S.fonts.body }}>
@@ -983,511 +1001,172 @@ function PosicaoBadge({ pos }) {
   return <div style={{ ...S.posBadge, background: "#E7E2D4", color: S.colors.deep }}>{pos}º</div>;
 }
 
+/* ================= PÓDIO ================= */
+
+const PODIO_CORES = { 1: "#E8B800", 2: "#9AA5AE", 3: "#B5651D" };
+const PODIO_ALTURA = { 1: 118, 2: 88, 3: 66 };
+
+function Podio({ itens }) {
+  // itens: [{ pos, nome, valor, sub, cor }]
+  const porPos = {};
+  itens.forEach((it) => (porPos[it.pos] = it));
+  return (
+    <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "center", gap: 10, padding: "8px 8px 0", borderBottom: "3px solid #E7E2D4" }}>
+      {[2, 1, 3].filter((pos) => porPos[pos]).map((pos) => {
+        const it = porPos[pos];
+        const cor = PODIO_CORES[pos];
+        return (
+          <div key={pos} style={{ flex: "1 1 0", maxWidth: 190, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "center" }}>
+            {pos === 1 && <Crown size={22} color={cor} style={{ marginBottom: 4 }} />}
+            <div style={{ fontFamily: S.fonts.body, fontWeight: 700, fontSize: 13.5, color: S.colors.deep, textAlign: "center", lineHeight: 1.2, wordBreak: "break-word" }}>
+              {it.nome}
+            </div>
+            <div style={{ fontFamily: S.fonts.display, fontSize: 15, fontWeight: 600, color: it.cor, marginTop: 3 }}>{it.valor}</div>
+            {it.sub && <div style={{ fontFamily: S.fonts.body, fontSize: 11.5, color: "#7c8a8e", marginTop: 1 }}>{it.sub}</div>}
+            <div
+              style={{
+                width: "100%", height: PODIO_ALTURA[pos], marginTop: 8, borderRadius: "10px 10px 0 0",
+                background: `linear-gradient(180deg, ${cor} 0%, ${cor}CC 100%)`,
+                display: "flex", alignItems: "flex-start", justifyContent: "center", paddingTop: 8,
+                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.35)",
+              }}
+            >
+              <span style={{ fontFamily: S.fonts.display, fontSize: 30, fontWeight: 700, color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.25)" }}>{pos}º</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 /* ================= CLASSIFICAÇÃO GERAL ================= */
 
-function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral, proximaEtapa, etapasInfo }) {
+function ClassificacaoTab({ catAtual, setCatAtual, linhas, rankingEtapa }) {
+  const [visao, setVisao] = useState("geral");
+  const isGeral = visao === "geral";
   const topN = TOP_GERAL[catAtual];
-  const [selecionadoId, setSelecionadoId] = useState(null);
+  const cor = CATS[catAtual].color;
+  const rkEtapa = isGeral ? [] : rankingEtapa(visao, catAtual);
+  const comResultado = linhas.filter((l) => l.nEtapas > 0);
 
-  useEffect(() => {
-    setSelecionadoId(null);
-  }, [catAtual]);
-
-  const selecionado = linhas.find((l) => l.pescador.id === selecionadoId) || linhas[0] || null;
+  const itensPodio = isGeral
+    ? comResultado.slice(0, 3).map((l) => ({
+        pos: l.posicao, nome: l.pescador.nome, valor: `${fmtPts(l.total)} pts`,
+        sub: `${l.nEtapas} ${l.nEtapas === 1 ? "etapa" : "etapas"}`, cor,
+      }))
+    : rkEtapa.slice(0, 3).map((r) => ({
+        pos: r.pos, nome: r.pescador.nome, valor: `${fmt(r.peso)} kg`, sub: `${fmtPts(r.pontos)} pts`, cor,
+      }));
 
   return (
     <div>
       <div style={S.card}>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
-          <SectionTitle icon={Trophy} title="Classificação Geral do Campeonato" subtitle={`Soma dos pontos das ${N_ETAPAS} etapas, descartando a de menor pontuação. Top ${topN} recebem troféu e material de pesca.`} />
-          {linhas.length > 0 && (
-            <button onClick={() => exportarClassificacaoPDF(catAtual, linhas, topN, etapasInfo)} style={S.btnGhost}>
-              <FileDown size={15} style={{ marginRight: 6 }} /> Baixar PDF
+        <SectionTitle
+          icon={Medal}
+          title={isGeral ? "Pódio do Campeonato" : `Pódio da Etapa ${visao}`}
+          subtitle={isGeral ? "Os três primeiros colocados na classificação geral." : "Os três primeiros colocados na pesagem desta etapa."}
+        />
+        <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 18 }}>
+          <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            <button onClick={() => setVisao("geral")} style={{ ...S.etapaChip, ...(isGeral ? S.etapaChipActive : {}) }}>
+              Geral
             </button>
+            {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => (
+              <button key={n} onClick={() => setVisao(n)} style={{ ...S.etapaChip, ...(visao === n ? S.etapaChipActive : {}) }}>
+                Etapa {n}
+              </button>
+            ))}
+          </div>
+          <div style={{ marginLeft: "auto" }}>
+            <CatSwitch cat={catAtual} setCat={setCatAtual} />
+          </div>
+        </div>
+
+        {itensPodio.length === 0 ? (
+          <div style={S.emptyNote}>
+            {isGeral ? `Nenhum resultado lançado ainda para ${CATS[catAtual].label}.` : `A Etapa ${visao} ainda não tem resultados lançados no ${CATS[catAtual].label}.`}
+          </div>
+        ) : (
+          <Podio itens={itensPodio} />
+        )}
+      </div>
+
+      {isGeral ? (
+        <div style={{ ...S.card, marginTop: 16 }}>
+          <SectionTitle icon={Trophy} title="Classificação Geral do Campeonato" subtitle={`Soma dos pontos das ${N_ETAPAS} etapas, descartando a de menor pontuação. Top ${topN} recebem troféu e material de pesca.`} />
+
+          {linhas.length === 0 ? (
+            <div style={S.emptyNote}>Nenhum resultado lançado ainda para {CATS[catAtual].label}.</div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={S.table}>
+                <thead>
+                  <tr>
+                    <th style={S.th}>Pos.</th>
+                    <th style={S.th}>Pescador(a)</th>
+                    {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => (
+                      <th key={n} style={{ ...S.th, textAlign: "center" }}>E{n}</th>
+                    ))}
+                    <th style={{ ...S.th, textAlign: "right" }}>Descarte</th>
+                    <th style={{ ...S.th, textAlign: "right" }}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {linhas.map((l) => {
+                    const premiado = l.posicao <= topN;
+                    return (
+                      <tr key={l.pescador.id} style={premiado ? { background: "rgba(232,184,0,0.10)" } : {}}>
+                        <td style={S.td}>
+                          <PosicaoBadge pos={l.posicao} />
+                        </td>
+                        <td style={{ ...S.td, fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep }}>
+                          {l.pescador.nome}
+                          {premiado && <Trophy size={13} color="#E8B800" style={{ marginLeft: 6, verticalAlign: -2 }} />}
+                        </td>
+                        {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => {
+                          const pts = l.etapaPontos[n];
+                          const isDescarte = pts !== undefined && pts === l.descartada && l.nEtapas >= 2;
+                          return (
+                            <td key={n} style={{ ...S.td, textAlign: "center", fontSize: 12.5, color: isDescarte ? "#c04a4a" : "#5b6b6f", textDecoration: isDescarte ? "line-through" : "none" }}>
+                              {pts !== undefined ? fmtPts(pts).split(",")[0] : "—"}
+                            </td>
+                          );
+                        })}
+                        <td style={{ ...S.td, textAlign: "right", fontSize: 12, color: "#c04a4a" }}>
+                          {l.descartada !== null ? `−${fmtPts(l.descartada)}` : "—"}
+                        </td>
+                        <td style={{ ...S.td, textAlign: "right", fontFamily: S.fonts.body, fontWeight: 800, color: CATS[catAtual].color, fontSize: 14.5 }}>
+                          {fmtPts(l.total)}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           )}
         </div>
-
-        {proximaEtapa && (proximaEtapa.local || proximaEtapa.data) && (
-          <div
-            style={{
-              display: "flex", alignItems: "center", gap: 12,
-              background: "#FBF3D9", border: "1px solid #EBD98A",
-              borderRadius: 12, padding: "12px 16px", marginBottom: 14,
-            }}
-          >
-            <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(232,184,0,0.22)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-              <Calendar size={17} color="#8a6a00" />
-            </div>
-            <div>
-              <div style={{ fontFamily: S.fonts.body, fontSize: 11, fontWeight: 700, color: "#8a6a00", textTransform: "uppercase", letterSpacing: 0.3 }}>
-                Próxima etapa — Etapa {proximaEtapa.n}
-              </div>
-              <div style={{ fontFamily: S.fonts.display, fontSize: 15.5, fontWeight: 700, color: "#5b4600" }}>
-                {proximaEtapa.local || "Local a definir"}
-                {proximaEtapa.data && ` — ${fmtData(proximaEtapa.data)}`}
-              </div>
-            </div>
-          </div>
-        )}
-
-        <div
-          style={{
-            display: "flex", alignItems: "center", gap: 12,
-            background: "linear-gradient(135deg, #0B5E22, #0d7a2c)",
-            borderRadius: 12, padding: "14px 18px", marginBottom: 18, color: "#fff",
-          }}
-        >
-          <div style={{ width: 38, height: 38, borderRadius: 10, background: "rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-            <Weight size={19} color="#fff" />
-          </div>
-          <div>
-            <div style={{ fontFamily: S.fonts.display, fontSize: 20, fontWeight: 700, lineHeight: 1.1 }}>
-              <CountUp value={totalKgGeral} decimals={3} suffix=" kg" />
-            </div>
-            <div style={{ fontFamily: S.fonts.body, fontSize: 12, opacity: 0.85 }}>
-              Total pescado no campeonato (masculino + feminino, todas as etapas)
-            </div>
-          </div>
-        </div>
-
-        <div style={{ marginBottom: 16 }}>
-          <CatSwitch cat={catAtual} setCat={setCatAtual} />
-        </div>
-      </div>
-
-      {linhas.length === 0 ? (
-        <div style={{ ...S.card, marginTop: 14 }}>
-          <div style={S.emptyNote}>Nenhum resultado lançado ainda para {CATS[catAtual].label}.</div>
-        </div>
       ) : (
-        <div className="classif-grid" style={{ marginTop: 14 }}>
-          <div style={{ ...S.card, overflowX: "auto" }}>
-            <div style={{ fontFamily: S.fonts.body, fontSize: 12, color: "#8a9b9e", marginBottom: 8 }}>
-              Toque em um pescador(a) na lista para ver o detalhamento completo ao lado.
-            </div>
-            <div style={{ display: "flex", padding: "0 4px 8px", fontFamily: S.fonts.body, fontSize: 11, fontWeight: 700, color: "#8a9b9e", textTransform: "uppercase", letterSpacing: 0.3 }}>
-              <div style={{ width: 34, flexShrink: 0 }}>Pos.</div>
-              <div style={{ flex: 1, minWidth: 0 }}>Pescador(a)</div>
-              <div style={{ flexShrink: 0, textAlign: "right" }}>Total</div>
-            </div>
-            <div style={{ display: "grid", gap: 2 }}>
-              {linhas.map((l, idx) => {
-                const premiado = l.posicao <= topN;
-                const ativo = selecionado && selecionado.pescador.id === l.pescador.id;
-                return (
-                  <div
-                    key={l.pescador.id}
-                    onClick={() => setSelecionadoId(l.pescador.id)}
-                    className={`row-anim${l.posicao <= 3 ? " podium-glow" : ""}`}
-                    style={{
-                      display: "flex", alignItems: "center", gap: 10, padding: "9px 4px", borderRadius: 8, cursor: "pointer",
-                      background: ativo ? "rgba(11,94,34,0.08)" : premiado ? "rgba(232,184,0,0.10)" : "transparent",
-                      animationDelay: `${Math.min(idx, 12) * 35}ms`,
-                    }}
-                  >
-                    <div style={{ width: 34, flexShrink: 0 }}>
-                      <PosicaoBadge pos={l.posicao} />
-                    </div>
-                    <Avatar foto={l.pescador.foto} nome={l.pescador.nome} size={26} cor={CATS[catAtual].color} />
-                    <div style={{ flex: 1, minWidth: 0, fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep, fontSize: 14, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {l.pescador.nome}
-                      {premiado && <Trophy size={12} color="#E8B800" style={{ marginLeft: 5, verticalAlign: -1 }} />}
-                    </div>
-                    <div style={{ flexShrink: 0, textAlign: "right", fontFamily: S.fonts.body, fontWeight: 800, color: CATS[catAtual].color, fontSize: 14 }}>
-                      {fmtPts(l.total)}
-                    </div>
+        rkEtapa.length > 0 && (
+          <div style={{ ...S.card, marginTop: 16 }}>
+            <SectionTitle icon={Trophy} title={`Resultado da Etapa ${visao} — ${CATS[catAtual].label}`} subtitle="Classificação pelo peso total e pontuação COSAPYL." />
+            <div style={{ display: "grid", gap: 6 }}>
+              {rkEtapa.map((r) => (
+                <div key={r.pescador.id} style={{ ...S.rankRow, ...(r.pos <= 3 ? S.rankRowTop : {}) }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <PosicaoBadge pos={r.pos} />
+                    <span style={{ fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep, fontSize: 14.5 }}>{r.pescador.nome}</span>
                   </div>
-                );
-              })}
+                  <div style={{ display: "flex", gap: 18, alignItems: "center", fontFamily: S.fonts.body }}>
+                    <span style={{ fontSize: 13, color: "#5b6b6f" }}>{fmt(r.peso)} kg</span>
+                    <span style={{ fontSize: 13.5, fontWeight: 700, color: cor }}>{fmtPts(r.pontos)} pts</span>
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
-
-          {selecionado && <PescadorSpotlight linha={selecionado} cat={catAtual} topN={topN} etapasInfo={etapasInfo} />}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ================= PAINEL DE DESTAQUE DO PESCADOR ================= */
-
-function PescadorSpotlight({ linha, cat, topN, etapasInfo }) {
-  const etapasNums = Array.from({ length: N_ETAPAS }, (_, i) => i + 1);
-  const mediaPorPeixe = linha.qtdTemp > 0 ? (linha.pesoTemp || 0) / linha.qtdTemp : 0;
-  const premiado = linha.posicao <= topN;
-
-  const chartData = etapasNums.map((n) => ({
-    etapa: `E${n}`,
-    etapaCompleta: etapaTitulo(n, etapasInfo),
-    pontos: linha.etapaDetalhe[n] ? linha.etapaDetalhe[n].pontos : null,
-  }));
-
-  return (
-    <div style={S.card}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
-        <Avatar foto={linha.pescador.foto} nome={linha.pescador.nome} size={56} cor={CATS[cat].color} />
-        <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontFamily: S.fonts.display, fontSize: 21, fontWeight: 700, color: S.colors.deep }}>{linha.pescador.nome}</span>
-            {premiado && <Trophy size={17} color="#E8B800" />}
-          </div>
-          <div style={{ marginTop: 3 }}>
-            {premiado ? (
-              <span style={{ ...S.badgePill, background: "rgba(232,184,0,0.15)", color: "#8a6a00" }}>{linha.posicao}º Lugar Geral</span>
-            ) : (
-              <span style={{ ...S.badgePill, background: "#F2EEDF", color: "#5b6b6f" }}>{linha.posicao}º Lugar Geral</span>
-            )}
-          </div>
-          <div style={{ fontFamily: S.fonts.body, fontSize: 12, color: "#8a9b9e", marginTop: 4 }}>Categoria: {CATS[cat].label}</div>
-        </div>
-      </div>
-
-      <div className="stat-grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 18 }}>
-        <MiniStat label="Total de Peixes" valor={<><CountUp value={linha.qtdTemp || 0} decimals={0} /> peixes</>} />
-        <MiniStat label="Peso Total" valor={<CountUp value={linha.pesoTemp || 0} decimals={3} suffix=" kg" />} />
-        <MiniStat label="Média por Peixe" valor={`${fmt(mediaPorPeixe)} kg`} />
-        <MiniStat label="Maior Peixe" valor={linha.maiorPeixeTemp > 0 ? `${fmt(linha.maiorPeixeTemp)} kg` : "—"} />
-      </div>
-
-      <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, fontWeight: 700, color: S.colors.deep, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3 }}>
-        Desempenho por Etapa
-      </div>
-      <div className="etapa-mini-grid" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8 }}>
-        {etapasNums.map((n) => {
-          const d = linha.etapaDetalhe[n];
-          const isDescarte = d && d.pontos === linha.descartada && linha.nEtapas >= 2;
-          return (
-            <div
-              key={n}
-              style={{
-                background: "#FBF9F2", borderRadius: 10, padding: "8px 10px", textAlign: "center",
-                border: isDescarte ? "1px solid #E3A9A5" : "1px solid #EDE8D9",
-              }}
-            >
-              <div style={{ fontFamily: S.fonts.body, fontSize: 11, fontWeight: 700, color: "#8a9b9e" }} title={etapaTitulo(n, etapasInfo)}>
-                E{n}
-                {etapasInfo && etapasInfo[n] && etapasInfo[n].local && (
-                  <div style={{ fontSize: 9.5, fontWeight: 600, color: "#b0aa93", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {etapasInfo[n].local}
-                  </div>
-                )}
-              </div>
-              {!d ? (
-                <div style={{ fontFamily: S.fonts.body, fontSize: 11, color: "#b7bfc2", marginTop: 6 }}>Não realizada</div>
-              ) : (
-                <>
-                  <div style={{ fontFamily: S.fonts.display, fontSize: 15.5, fontWeight: 700, color: isDescarte ? "#c04a4a" : S.colors.deep }}>
-                    {fmtPts(d.pontos).split(",")[0]}<span style={{ fontSize: 10, fontWeight: 600 }}>pts</span>
-                  </div>
-                  <div style={{ fontFamily: S.fonts.body, fontSize: 10.5, color: "#8a9b9e" }}>{fmtInt(d.quantidade)} peixes</div>
-                  <div style={{ fontFamily: S.fonts.body, fontSize: 10.5, color: "#8a9b9e" }}>{fmt(d.peso)} kg</div>
-                  <div style={{ marginTop: 4 }}>
-                    <span style={{ fontFamily: S.fonts.body, fontSize: 10, fontWeight: 700, color: isDescarte ? "#c04a4a" : CATS[cat].color }}>
-                      {d.pos}º lugar
-                    </span>
-                  </div>
-                </>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      <div style={{ fontFamily: S.fonts.body, fontSize: 10.5, color: "#9aa5ae", marginBottom: 18 }}>
-        * A menor pontuação é descartada no cálculo do total.
-      </div>
-
-      <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, fontWeight: 700, color: S.colors.deep, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3 }}>
-        Evolução de Pontos
-      </div>
-      <div style={{ width: "100%", height: 190 }}>
-        <ResponsiveContainer>
-          <LineChart data={chartData} margin={{ top: 8, right: 10, left: -18, bottom: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#EDE8D9" />
-            <XAxis dataKey="etapa" tick={{ fontSize: 11.5, fontFamily: "Inter" }} stroke="#8a9b9e" />
-            <YAxis tick={{ fontSize: 11.5, fontFamily: "Inter" }} stroke="#8a9b9e" domain={[0, 100]} />
-            <Tooltip
-              formatter={(value) => (value === null || value === undefined ? "—" : fmtPts(value))}
-              labelFormatter={(_, payload) => (payload && payload[0] ? payload[0].payload.etapaCompleta : "")}
-              contentStyle={{ fontFamily: "Inter", fontSize: 12, borderRadius: 8, border: "1px solid #EDE8D9" }}
-            />
-            <Line type="monotone" dataKey="pontos" name="Pontuação" stroke={CATS[cat].color} strokeWidth={2.5} dot={{ r: 3.5 }} connectNulls />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
-}
-
-/* ================= EXPORTAÇÃO EM PDF ================= */
-
-function pdfCabecalho(doc, titulo, subtitulo) {
-  doc.setFillColor(11, 94, 34);
-  doc.rect(0, 0, doc.internal.pageSize.getWidth(), 26, "F");
-  doc.setTextColor(255, 255, 255);
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(14);
-  doc.text("APEP 2026 — Associação de Pesca Esportiva Potiguar", 14, 11);
-  doc.setFont("helvetica", "normal");
-  doc.setFontSize(10.5);
-  doc.text(titulo, 14, 19);
-  doc.setTextColor(40, 40, 40);
-  doc.setFontSize(9.5);
-  doc.text(subtitulo, 14, 33);
-  doc.text(`Gerado em ${new Date().toLocaleString("pt-BR")}`, doc.internal.pageSize.getWidth() - 14, 33, { align: "right" });
-}
-
-function exportarClassificacaoPDF(cat, linhas, topN, etapasInfo) {
-  const doc = new jsPDF({ orientation: "landscape" });
-  pdfCabecalho(doc, `Classificação Geral — ${CATS[cat].label}`, `Soma dos pontos das ${N_ETAPAS} etapas, descartando a de menor pontuação. Top ${topN} recebem premiação.`);
-
-  const cols = ["Pos.", "Pescador(a)", ...Array.from({ length: N_ETAPAS }, (_, i) => etapaTitulo(i + 1, etapasInfo)), "Descarte", "Total"];
-  const rows = linhas.map((l) => [
-    `${l.posicao}º`,
-    l.pescador.nome,
-    ...Array.from({ length: N_ETAPAS }, (_, i) => {
-      const pts = l.etapaPontos[i + 1];
-      return pts !== undefined ? fmtPts(pts) : "—";
-    }),
-    l.descartada !== null ? `−${fmtPts(l.descartada)}` : "—",
-    fmtPts(l.total),
-  ]);
-
-  autoTable(doc, {
-    startY: 38,
-    head: [cols],
-    body: rows,
-    theme: "striped",
-    headStyles: { fillColor: [11, 94, 34], fontSize: 7.5 },
-    styles: { fontSize: 8.5, cellPadding: 2.5 },
-    didParseCell: (data) => {
-      if (data.row.index < topN && data.column.index === 0) {
-        data.cell.styles.textColor = [200, 150, 0];
-        data.cell.styles.fontStyle = "bold";
-      }
-    },
-  });
-
-  doc.save(`APEP2026_classificacao_${CATS[cat].label.toLowerCase()}.pdf`);
-}
-
-function exportarEtapaPDF(etapa, cat, ranking, etapasInfo) {
-  const doc = new jsPDF();
-  pdfCabecalho(doc, `Resultado — ${etapaTitulo(etapa, etapasInfo)} — ${CATS[cat].label}`, "Classificação pelo peso total e pontuação COSAPYL da etapa.");
-
-  const rows = ranking.map((r, idx) => [
-    `${idx + 1}º`,
-    r.pescador.nome,
-    fmt(r.peso),
-    fmtInt(r.quantidade),
-    r.peixesExoticos ? fmtInt(r.peixesExoticos) : "0",
-    r.maiorPeixe > 0 ? fmt(r.maiorPeixe) : "—",
-    fmtPts(r.pontos),
-  ]);
-
-  autoTable(doc, {
-    startY: 38,
-    head: [["Pos.", "Pescador(a)", "Peso (kg)", "Qtd. peixes", "Peixes exóticos", "Maior peixe (kg)", "Pontos COSAPYL"]],
-    body: rows,
-    theme: "striped",
-    headStyles: { fillColor: [11, 94, 34], fontSize: 9 },
-    styles: { fontSize: 9, cellPadding: 3 },
-  });
-
-  doc.save(`APEP2026_etapa${etapa}_${CATS[cat].label.toLowerCase()}.pdf`);
-}
-
-
-
-function DetalhePescador({ linha }) {
-  const etapasNums = Array.from({ length: N_ETAPAS }, (_, i) => i + 1);
-  const pescouEm = etapasNums.filter((n) => linha.etapaDetalhe[n]);
-
-  return (
-    <div style={{ background: "#FBF9F2", padding: "16px 20px 20px" }}>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 14 }}>
-        <MiniStat label="Peso total (todas etapas)" valor={`${fmt(linha.pesoTemp || 0)} kg`} />
-        <MiniStat label="Total de peixes pescados" valor={`${fmtInt(linha.qtdTemp || 0)} un.`} />
-        <MiniStat label="Maior peixe da temporada" valor={linha.maiorPeixeTemp > 0 ? `${fmt(linha.maiorPeixeTemp)} kg` : "—"} />
-        <MiniStat label="Etapas com pesagem" valor={`${pescouEm.length} de ${N_ETAPAS}`} />
-      </div>
-
-      <table style={{ ...S.table, background: "#fff" }}>
-        <thead>
-          <tr>
-            <th style={S.th}>Etapa</th>
-            <th style={{ ...S.th, textAlign: "center" }}>Adimplente</th>
-            <th style={{ ...S.th, textAlign: "center" }}>Peso (kg)</th>
-            <th style={{ ...S.th, textAlign: "center" }}>Qtd. peixes</th>
-            <th style={{ ...S.th, textAlign: "center" }}>Peixes exóticos</th>
-            <th style={{ ...S.th, textAlign: "center" }}>Maior peixe (kg)</th>
-            <th style={{ ...S.th, textAlign: "center" }}>Papa-terra (kg)</th>
-            <th style={{ ...S.th, textAlign: "center" }}>Posição</th>
-            <th style={{ ...S.th, textAlign: "right" }}>Pontos</th>
-          </tr>
-        </thead>
-        <tbody>
-          {etapasNums.map((n) => {
-            const d = linha.etapaDetalhe[n];
-            const isDescarte = d && d.pontos === linha.descartada && linha.nEtapas >= 2;
-            return (
-              <tr key={n}>
-                <td style={{ ...S.td, fontWeight: 600, color: S.colors.deep }}>Etapa {n}</td>
-                {!d ? (
-                  <td colSpan={8} style={{ ...S.td, textAlign: "center", color: "#9aa5ae" }}>Não pescou nessa etapa</td>
-                ) : (
-                  <>
-                    <td style={{ ...S.td, textAlign: "center" }}>{d.adimplente ? "Sim" : "Não"}</td>
-                    <td style={{ ...S.td, textAlign: "center" }}>{fmt(d.peso)}</td>
-                    <td style={{ ...S.td, textAlign: "center" }}>{fmtInt(d.quantidade)}</td>
-                    <td style={{ ...S.td, textAlign: "center" }}>{fmtInt(d.peixesExoticos)}</td>
-                    <td style={{ ...S.td, textAlign: "center" }}>{d.maiorPeixe > 0 ? fmt(d.maiorPeixe) : "—"}</td>
-                    <td style={{ ...S.td, textAlign: "center" }}>{d.papaTerra ? fmt(d.papaTerraPeso) : "—"}</td>
-                    <td style={{ ...S.td, textAlign: "center" }}>{d.pos}º</td>
-                    <td style={{ ...S.td, textAlign: "right", fontWeight: 700, color: isDescarte ? "#c04a4a" : S.colors.deep, textDecoration: isDescarte ? "line-through" : "none" }}>
-                      {fmtPts(d.pontos)}
-                    </td>
-                  </>
-                )}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      {linha.nEtapas >= 2 && (
-        <div style={{ fontFamily: S.fonts.body, fontSize: 11.5, color: "#8a9b9e", marginTop: 8 }}>
-          A etapa riscada em vermelho foi descartada no cálculo do total (menor pontuação da temporada).
-        </div>
-      )}
-    </div>
-  );
-}
-
-function MiniStat({ label, valor }) {
-  return (
-    <div style={{ background: "#fff", border: "1px solid #EDE8D9", borderRadius: 10, padding: "8px 14px", minWidth: 150 }}>
-      <div style={{ fontFamily: S.fonts.body, fontSize: 10.5, fontWeight: 700, color: "#8a9b9e", textTransform: "uppercase", letterSpacing: 0.3 }}>{label}</div>
-      <div style={{ fontFamily: S.fonts.display, fontSize: 17, fontWeight: 700, color: S.colors.deep }}>{valor}</div>
-    </div>
-  );
-}
-
-/* ================= EVOLUÇÃO POR ETAPA ================= */
-
-const CHART_COLORS = ["#0B5E22", "#E8B800", "#1B7FB8", "#C0453F", "#7A4FB5", "#D97A2B", "#3F9E8C", "#B5651D", "#5B6B6F", "#C74E8B"];
-
-function EvolucaoTab({ catAtual, setCatAtual, pescadores, etapas, etapasInfo, classificacaoGeral, rankingEtapa }) {
-  const [metrica, setMetrica] = useState("peso"); // "peso" | "pontos"
-
-  const ordenados = useMemo(() => {
-    const posPorId = {};
-    classificacaoGeral.forEach((l) => (posPorId[l.pescador.id] = l.posicao));
-    return [...pescadores].sort((a, b) => (posPorId[a.id] || 999) - (posPorId[b.id] || 999));
-  }, [pescadores, classificacaoGeral]);
-
-  const [selecionados, setSelecionados] = useState(null);
-  const idsPadrao = useMemo(() => new Set(ordenados.slice(0, 5).map((p) => p.id)), [ordenados]);
-  const ativos = selecionados || idsPadrao;
-
-  function toggle(id) {
-    const atual = new Set(selecionados || idsPadrao);
-    if (atual.has(id)) atual.delete(id);
-    else atual.add(id);
-    setSelecionados(atual);
-  }
-
-  const chartData = useMemo(() => {
-    const porEtapa = [];
-    for (let et = 1; et <= N_ETAPAS; et++) {
-      const rk = rankingEtapa(et, catAtual);
-      const mapa = {};
-      rk.forEach((r) => {
-        mapa[r.pescador.id] = metrica === "peso" ? r.peso : r.pontos;
-      });
-      const local = etapasInfo && etapasInfo[et] && etapasInfo[et].local;
-      const ponto = { etapa: local ? (local.length > 12 ? local.slice(0, 11) + "…" : local) : `Etapa ${et}`, etapaCompleta: etapaTitulo(et, etapasInfo) };
-      ordenados.forEach((p) => {
-        if (ativos.has(p.id)) ponto[p.nome] = mapa[p.id] !== undefined ? mapa[p.id] : null;
-      });
-      porEtapa.push(ponto);
-    }
-    return porEtapa;
-  }, [etapas, catAtual, metrica, ordenados, ativos, etapasInfo]);
-
-  return (
-    <div style={S.card}>
-      <SectionTitle icon={TrendingUp} title="Evolução por Etapa" subtitle="Acompanhe o desempenho de cada pescador(a) ao longo do campeonato." />
-
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
-        <CatSwitch cat={catAtual} setCat={setCatAtual} />
-        <div style={S.catSwitch}>
-          {[
-            { id: "peso", label: "Peso (kg)" },
-            { id: "pontos", label: "Pontos COSAPYL" },
-          ].map((m) => {
-            const active = metrica === m.id;
-            return (
-              <button
-                key={m.id}
-                onClick={() => setMetrica(m.id)}
-                style={{ ...S.catBtn, background: active ? S.colors.deep : "transparent", color: active ? "#fff" : S.colors.deep }}
-              >
-                {m.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {ordenados.length === 0 ? (
-        <div style={S.emptyNote}>Nenhum pescador(a) cadastrado em {CATS[catAtual].label} ainda.</div>
-      ) : (
-        <>
-          <div style={{ width: "100%", height: 340, marginBottom: 18 }}>
-            <ResponsiveContainer>
-              <LineChart data={chartData} margin={{ top: 8, right: 16, left: 0, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#EDE8D9" />
-                <XAxis dataKey="etapa" tick={{ fontSize: 11, fontFamily: "Inter" }} stroke="#8a9b9e" angle={-20} textAnchor="end" height={46} interval={0} />
-                <YAxis tick={{ fontSize: 12.5, fontFamily: "Inter" }} stroke="#8a9b9e" />
-                <Tooltip
-                  formatter={(value) => (value === null || value === undefined ? "—" : metrica === "peso" ? `${fmt(value)} kg` : fmtPts(value))}
-                  labelFormatter={(_, payload) => (payload && payload[0] ? payload[0].payload.etapaCompleta : "")}
-                  contentStyle={{ fontFamily: "Inter", fontSize: 12.5, borderRadius: 8, border: "1px solid #EDE8D9" }}
-                />
-                <Legend wrapperStyle={{ fontFamily: "Inter", fontSize: 12.5 }} />
-                {ordenados
-                  .map((p, idx) => ({ p, idx }))
-                  .filter(({ p }) => ativos.has(p.id))
-                  .map(({ p, idx }) => (
-                    <Line
-                      key={p.id}
-                      type="monotone"
-                      dataKey={p.nome}
-                      stroke={CHART_COLORS[idx % CHART_COLORS.length]}
-                      strokeWidth={2.5}
-                      dot={{ r: 3.5 }}
-                      connectNulls
-                    />
-                  ))}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-
-          <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, fontWeight: 700, color: S.colors.deep, marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.3 }}>
-            Mostrar no gráfico
-          </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px" }}>
-            {ordenados.map((p, idx) => {
-              const on = ativos.has(p.id);
-              return (
-                <label key={p.id} style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: S.fonts.body, fontSize: 13, color: on ? S.colors.deep : "#9aa5ae", cursor: "pointer" }}>
-                  <input type="checkbox" checked={on} onChange={() => toggle(p.id)} />
-                  <span style={{ width: 10, height: 10, borderRadius: "50%", background: on ? CHART_COLORS[idx % CHART_COLORS.length] : "#D9D3C2", display: "inline-block" }} />
-                  {p.nome}
-                </label>
-              );
-            })}
-          </div>
-        </>
+        )
       )}
     </div>
   );
@@ -1495,13 +1174,7 @@ function EvolucaoTab({ catAtual, setCatAtual, pescadores, etapas, etapasInfo, cl
 
 /* ================= PRÊMIOS ================= */
 
-function PremiosTab({ catAtual, setCatAtual, premios, etapas, pescadores, rankingEtapa, etapasInfo }) {
-  const [aberta, setAberta] = useState(null);
-
-  useEffect(() => {
-    setAberta(null);
-  }, [catAtual]);
-
+function PremiosTab({ catAtual, setCatAtual, premios, etapas, pescadores, rankingEtapa }) {
   return (
     <div>
       <div style={S.card}>
@@ -1517,66 +1190,23 @@ function PremiosTab({ catAtual, setCatAtual, premios, etapas, pescadores, rankin
       </div>
 
       <div style={{ ...S.card, marginTop: 16 }}>
-        <SectionTitle icon={Medal} title="Pódios por Etapa" subtitle={`1º Troféu · 2º e 3º Medalha — ${CATS[catAtual].label}. Toque numa etapa para ver a classificação completa.`} />
-        <div style={{ display: "grid", gap: 6 }}>
+        <SectionTitle icon={Medal} title="Pódios por Etapa" subtitle={`1º Troféu · 2º e 3º Medalha — ${CATS[catAtual].label}`} />
+        <div style={{ display: "grid", gap: 14 }}>
           {Array.from({ length: N_ETAPAS }, (_, i) => i + 1).map((n) => {
-            const rk = rankingEtapa(n, catAtual);
-            const podio = rk.slice(0, 3);
-            const isAberta = aberta === n;
+            const rk = rankingEtapa(n, catAtual).slice(0, 3);
             return (
-              <div key={n}>
-                <div
-                  onClick={() => rk.length > 0 && setAberta(isAberta ? null : n)}
-                  style={{ ...S.podiumRow, cursor: rk.length > 0 ? "pointer" : "default", borderRadius: 8, padding: "6px 8px", background: isAberta ? "rgba(11,94,34,0.06)" : "transparent" }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 150 }}>
-                    {rk.length > 0 && (
-                      <ChevronRight size={15} color="#8a9b9e" style={{ transform: isAberta ? "rotate(90deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }} />
-                    )}
-                    <div style={{ fontFamily: S.fonts.body, fontWeight: 700, fontSize: 13, color: S.colors.deep }}>{etapaTitulo(n, etapasInfo)}</div>
-                  </div>
-                  {rk.length === 0 ? (
-                    <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: "#9aa5ae" }}>sem resultados</span>
-                  ) : (
-                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                      {podio.map((r) => (
-                        <div key={r.pescador.id} style={S.podiumPill}>
-                          <PosicaoBadge pos={r.pos} />
-                          <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: S.colors.deep, fontWeight: 600 }}>{r.pescador.nome}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {isAberta && (
-                  <div style={{ overflowX: "auto", marginTop: 4, marginBottom: 6, border: "1px solid #EDE8D9", borderRadius: 10 }}>
-                    <table style={{ ...S.table, minWidth: 0 }}>
-                      <thead>
-                        <tr>
-                          <th style={S.th}>Pos.</th>
-                          <th style={S.th}></th>
-                          <th style={S.th}>Pescador(a)</th>
-                          <th style={{ ...S.th, textAlign: "right" }}>Peso (kg)</th>
-                          <th style={{ ...S.th, textAlign: "right" }}>Pontos</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rk.map((r) => (
-                          <tr key={r.pescador.id}>
-                            <td style={S.td}>
-                              <PosicaoBadge pos={r.pos} />
-                            </td>
-                            <td style={{ ...S.td, textAlign: "center" }}>
-                              <Avatar foto={r.pescador.foto} nome={r.pescador.nome} size={24} cor={CATS[catAtual].color} />
-                            </td>
-                            <td style={{ ...S.td, fontFamily: S.fonts.body, fontWeight: 600, color: S.colors.deep }}>{r.pescador.nome}</td>
-                            <td style={{ ...S.td, textAlign: "right", fontFamily: S.fonts.body, color: "#5b6b6f" }}>{fmt(r.peso)}</td>
-                            <td style={{ ...S.td, textAlign: "right", fontFamily: S.fonts.body, fontWeight: 800, color: CATS[catAtual].color }}>{fmtPts(r.pontos)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+              <div key={n} style={S.podiumRow}>
+                <div style={{ fontFamily: S.fonts.body, fontWeight: 700, fontSize: 13, color: S.colors.deep, minWidth: 68 }}>Etapa {n}</div>
+                {rk.length === 0 ? (
+                  <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: "#9aa5ae" }}>sem resultados</span>
+                ) : (
+                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                    {rk.map((r) => (
+                      <div key={r.pescador.id} style={S.podiumPill}>
+                        <PosicaoBadge pos={r.pos} />
+                        <span style={{ fontFamily: S.fonts.body, fontSize: 13, color: S.colors.deep, fontWeight: 600 }}>{r.pescador.nome}</span>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -1597,6 +1227,235 @@ function PremioCard({ label, icon: Icon, valor, nome, cor }) {
       <div style={{ fontFamily: S.fonts.body, fontSize: 11.5, letterSpacing: 0.3, color: "#7c8a8e", textTransform: "uppercase", marginTop: 10 }}>{label}</div>
       <div style={{ fontFamily: S.fonts.display, fontSize: 21, color: S.colors.deep, marginTop: 3 }}>{valor}</div>
       <div style={{ fontFamily: S.fonts.body, fontSize: 13, color: cor, fontWeight: 700, marginTop: 2 }}>{nome || "—"}</div>
+    </div>
+  );
+}
+
+/* ================= INÍCIO (destaques / notícias) ================= */
+
+const NOTICIA_ICONES = { campeao: Trophy, peixe: Fish, papa: Anchor, qtd: Medal, resumo: Waves, lider: Crown };
+
+function NoticiaCard({ n }) {
+  const Icon = NOTICIA_ICONES[n.tipo] || Newspaper;
+  const cor = n.cat ? CATS[n.cat].color : S.colors.deep;
+  return (
+    <div style={S.newsCard}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ ...S.premioIcon, width: 28, height: 28, margin: 0, background: cor, flexShrink: 0 }}>
+          <Icon size={14} color="#fff" />
+        </div>
+        <span style={{ fontFamily: S.fonts.body, fontSize: 10.5, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase", color: cor }}>{n.tag}</span>
+      </div>
+      <div style={{ fontFamily: S.fonts.display, fontSize: 16.5, fontWeight: 600, color: S.colors.deep, lineHeight: 1.25 }}>{n.titulo}</div>
+      <div style={{ fontFamily: S.fonts.body, fontSize: 13.5, color: "#4b5a5e", lineHeight: 1.5 }}>{n.texto}</div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: "auto", paddingTop: 4 }}>
+        {n.chips.map((c) => (
+          <span key={c} style={{ ...S.newsChip, background: "#F1EEE2", color: S.colors.deep }}>{c}</span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InicioTab({ noticias, resumo, irPara }) {
+  const [filtro, setFiltro] = useState("todas");
+  const etapasComNoticia = [...new Set(noticias.map((n) => n.etapa))].sort((a, b) => a - b);
+  const lista = filtro === "todas" ? noticias : noticias.filter((n) => n.etapa === filtro);
+  const [destaque, ...resto] = lista;
+  const ordemEtapas = [...new Set(resto.map((n) => n.etapa))];
+
+  const stats = [
+    { label: "Etapas realizadas", valor: `${resumo.etapasFeitas}/${N_ETAPAS}`, icon: Calendar },
+    { label: "Pescadores", valor: resumo.pescadores, icon: Users },
+    { label: "Pescado na temporada", valor: `${fmt(resumo.pesoTotal, 2)} kg`, icon: Scale },
+    { label: "Maior peixe", valor: resumo.maiorPeixe ? `${fmt(resumo.maiorPeixe.v)} kg` : "—", sub: resumo.maiorPeixe?.nome, icon: Fish },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10, marginTop: 20 }}>
+        {stats.map((st) => {
+          const Icon = st.icon;
+          return (
+            <div key={st.label} style={S.statCard}>
+              <div style={{ ...S.premioIcon, width: 34, height: 34, margin: 0, background: "#EEF2E9", flexShrink: 0 }}>
+                <Icon size={16} color={S.colors.deep} />
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontFamily: S.fonts.body, fontSize: 10.5, letterSpacing: 0.3, textTransform: "uppercase", color: "#7c8a8e" }}>{st.label}</div>
+                <div style={{ fontFamily: S.fonts.display, fontSize: 18, color: S.colors.deep, lineHeight: 1.2 }}>{st.valor}</div>
+                {st.sub && <div style={{ fontFamily: S.fonts.body, fontSize: 11.5, color: "#7c8a8e", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{st.sub}</div>}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {noticias.length === 0 ? (
+        <div style={{ ...S.card, textAlign: "center", padding: "36px 20px" }}>
+          <div style={{ ...S.premioIcon, background: "#EEF2E9", margin: "0 auto 10px" }}>
+            <Newspaper size={18} color={S.colors.deep} />
+          </div>
+          <div style={{ fontFamily: S.fonts.display, fontSize: 18, color: S.colors.deep }}>Os destaques aparecem aqui</div>
+          <div style={{ fontFamily: S.fonts.body, fontSize: 13.5, color: "#7c8a8e", marginTop: 4 }}>
+            Assim que a diretoria lançar a primeira etapa, as notícias da temporada são geradas automaticamente.
+          </div>
+        </div>
+      ) : (
+        <>
+          {etapasComNoticia.length > 1 && (
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 20 }}>
+              <button onClick={() => setFiltro("todas")} style={{ ...S.etapaChip, ...(filtro === "todas" ? S.etapaChipActive : {}) }}>Todas</button>
+              {etapasComNoticia.map((n) => (
+                <button key={n} onClick={() => setFiltro(n)} style={{ ...S.etapaChip, ...(filtro === n ? S.etapaChipActive : {}) }}>Etapa {n}</button>
+              ))}
+            </div>
+          )}
+
+          {destaque && (
+            <div style={S.hero}>
+              <Waves size={200} style={{ position: "absolute", right: -30, bottom: -50, opacity: 0.08, color: "#F7F3E8" }} />
+              <div style={{ position: "relative" }}>
+                <span style={S.heroTag}><Newspaper size={12} /> Destaque · {destaque.tag}</span>
+                <div style={{ fontFamily: S.fonts.display, fontSize: 25, fontWeight: 600, lineHeight: 1.2, marginTop: 12, maxWidth: 640 }}>{destaque.titulo}</div>
+                <div style={{ fontFamily: S.fonts.body, fontSize: 14.5, lineHeight: 1.55, marginTop: 10, maxWidth: 680, color: "rgba(247,243,232,0.9)" }}>{destaque.texto}</div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 14, alignItems: "center" }}>
+                  {destaque.chips.map((c) => (
+                    <span key={c} style={{ ...S.newsChip, background: "rgba(255,255,255,0.16)", color: "#F7F3E8" }}>{c}</span>
+                  ))}
+                  <button onClick={() => irPara("classificacao")} style={S.heroLink}>
+                    Ver classificação <ChevronRight size={14} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {ordemEtapas.map((n) => (
+            <div key={n} style={{ marginTop: 24 }}>
+              <div style={{ fontFamily: S.fonts.display, fontSize: 16, fontWeight: 600, color: S.colors.deep, marginBottom: 10 }}>
+                Etapa {n}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+                {resto.filter((x) => x.etapa === n).map((x) => (
+                  <NoticiaCard key={x.id} n={x} />
+                ))}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ================= HISTÓRICO (somente diretoria) ================= */
+
+const ACESSOS = ["login", "logout", "login_falho"];
+const LOG_META = {
+  login: { icon: LogIn, cor: "#0A7A3E", rotulo: "Entrada" },
+  logout: { icon: LogOut, cor: "#7c8a8e", rotulo: "Saída" },
+  login_falho: { icon: ShieldAlert, cor: "#c04a4a", rotulo: "Acesso negado" },
+  pescador_add: { icon: UserPlus, cor: "#0068B3", rotulo: "Cadastro" },
+  pescador_del: { icon: UserMinus, cor: "#c04a4a", rotulo: "Remoção" },
+  edicao: { icon: Pencil, cor: "#C98A00", rotulo: "Alteração" },
+  salvar: { icon: Check, cor: "#0A7A3E", rotulo: "Salvamento" },
+};
+
+function HistoricoTab({ historico, onRecarregar }) {
+  const [filtro, setFiltro] = useState("todos");
+  const [limite, setLimite] = useState(100);
+  const [atualizando, setAtualizando] = useState(false);
+
+  const lista = historico
+    .filter((h) => !(h.tipo === "edicao" && String(h.antes) === String(h.depois))) // valor voltou ao original: sem mudança real
+    .filter((h) => (filtro === "todos" ? true : filtro === "acessos" ? ACESSOS.includes(h.tipo) : !ACESSOS.includes(h.tipo)));
+  const visiveis = lista.slice(0, limite);
+
+  async function atualizar() {
+    setAtualizando(true);
+    try {
+      await onRecarregar();
+    } finally {
+      setAtualizando(false);
+    }
+  }
+
+  const filtros = [
+    { id: "todos", label: "Tudo" },
+    { id: "acessos", label: "Acessos" },
+    { id: "alteracoes", label: "Alterações" },
+  ];
+
+  let diaAnterior = null;
+  return (
+    <div style={S.card}>
+      <SectionTitle
+        icon={HistoryIcon}
+        title="Histórico da diretoria"
+        subtitle={`Quem entrou na área restrita e o que foi alterado, com data e hora. Ficam guardados os últimos ${HIST_MAX} eventos.`}
+      />
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 16 }}>
+        <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+          {filtros.map((f) => (
+            <button key={f.id} onClick={() => { setFiltro(f.id); setLimite(100); }} style={{ ...S.etapaChip, ...(filtro === f.id ? S.etapaChipActive : {}) }}>
+              {f.label}
+            </button>
+          ))}
+        </div>
+        <button onClick={atualizar} style={{ ...S.etapaChip, marginLeft: "auto", display: "flex", alignItems: "center", gap: 5 }} disabled={atualizando}>
+          <RefreshCw size={12} className={atualizando ? "animate-spin" : ""} /> Atualizar
+        </button>
+      </div>
+
+      {lista.length === 0 ? (
+        <div style={S.emptyNote}>Nenhum registro ainda. Entradas e alterações feitas a partir de agora aparecem aqui.</div>
+      ) : (
+        <div style={{ display: "grid", gap: 6 }}>
+          {visiveis.map((h) => {
+            const meta = LOG_META[h.tipo] || { icon: Pencil, cor: "#7c8a8e", rotulo: "Evento" };
+            const Icon = meta.icon;
+            const d = new Date(h.ts);
+            const dia = d.toLocaleDateString("pt-BR", { weekday: "long", day: "2-digit", month: "long", year: "numeric" });
+            const hora = d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+            const cabecalho = dia !== diaAnterior;
+            diaAnterior = dia;
+            return (
+              <React.Fragment key={h.id}>
+                {cabecalho && (
+                  <div style={{ fontFamily: S.fonts.body, fontSize: 11.5, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: "#7c8a8e", marginTop: 10 }}>{dia}</div>
+                )}
+                <div style={{ ...S.rankRow, alignItems: "flex-start", gap: 10 }}>
+                  <div style={{ ...S.premioIcon, width: 28, height: 28, margin: 0, background: meta.cor, flexShrink: 0 }}>
+                    <Icon size={14} color="#fff" />
+                  </div>
+                  <div style={{ flex: 1, minWidth: 0, fontFamily: S.fonts.body }}>
+                    <div style={{ fontSize: 13.5, color: S.colors.deep, fontWeight: 600 }}>{h.texto}</div>
+                    {h.tipo === "edicao" && (
+                      <div style={{ fontSize: 12.5, color: "#5b6b6f", marginTop: 3 }}>
+                        <span style={{ textDecoration: "line-through", opacity: 0.7 }}>{fmtValor(h.campo, h.antes)}</span>
+                        {" → "}
+                        <span style={{ fontWeight: 700, color: S.colors.deep }}>{fmtValor(h.campo, h.depois)}</span>
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11.5, color: "#7c8a8e", marginTop: 3 }}>
+                      <span style={{ fontWeight: 700 }}>{h.user}</span> · {meta.rotulo} · {hora}
+                    </div>
+                  </div>
+                </div>
+              </React.Fragment>
+            );
+          })}
+        </div>
+      )}
+
+      {lista.length > limite && (
+        <div style={{ display: "flex", justifyContent: "center", marginTop: 14 }}>
+          <button onClick={() => setLimite((l) => l + 100)} style={S.etapaChip}>
+            Mostrar mais ({lista.length - limite})
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1645,8 +1504,6 @@ const S = {
   card: { background: "#fff", borderRadius: 14, padding: "22px 20px", marginTop: 20, boxShadow: "0 1px 3px rgba(13,59,74,0.08), 0 1px 2px rgba(13,59,74,0.06)", border: "1px solid #EDE8D9" },
   input: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 14, padding: "10px 12px", borderRadius: 8, border: "1px solid #DDD6C3", outline: "none", background: "#FBF9F2" },
   btnPrimary: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13.5, fontWeight: 700, color: "#fff", background: "#0B5E22", border: "none", borderRadius: 8, padding: "10px 16px", cursor: "pointer", display: "flex", alignItems: "center" },
-  btnGhost: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13, fontWeight: 700, color: "#0B5E22", background: "#fff", border: "1px solid #0B5E22", borderRadius: 8, padding: "8px 14px", cursor: "pointer", display: "flex", alignItems: "center" },
-  badgePill: { display: "inline-block", fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11.5, fontWeight: 700, padding: "3px 10px", borderRadius: 999 },
   catHeading: { fontFamily: "'Fraunces', serif", fontSize: 15, fontWeight: 600, marginBottom: 8 },
   rowItem: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 12px", background: "#FBF9F2", borderRadius: 8, border: "1px solid #EDE8D9" },
   iconBtnGhost: { background: "transparent", border: "none", color: "#B5651D", cursor: "pointer", padding: 4, display: "flex" },
@@ -1654,7 +1511,7 @@ const S = {
   catSwitch: { display: "inline-flex", background: "#EFEAD8", borderRadius: 8, padding: 3, gap: 3 },
   catBtn: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 12.5, fontWeight: 700, border: "none", borderRadius: 6, padding: "7px 14px", cursor: "pointer" },
   etapaChip: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 12.5, fontWeight: 600, color: "#0B5E22", background: "#FBF9F2", border: "1px solid #DDD6C3", borderRadius: 999, padding: "6px 12px", cursor: "pointer" },
-  etapaChipActive: { background: "#0B5E22", color: "#fff", borderColor: "#0B5E22" },
+  etapaChipActive: { background: "#0B5E22", color: "#fff", border: "1px solid #0B5E22" },
   table: { width: "100%", borderCollapse: "collapse", minWidth: 640 },
   th: { textAlign: "left", fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: 0.3, textTransform: "uppercase", color: "#7c8a8e", padding: "8px 10px", borderBottom: "2px solid #EDE8D9" },
   td: { padding: "8px 10px", borderBottom: "1px solid #F2EEDF", verticalAlign: "middle" },
@@ -1666,6 +1523,12 @@ const S = {
   premioIcon: { width: 38, height: 38, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto" },
   podiumRow: { display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", borderBottom: "1px solid #F2EEDF", paddingBottom: 12 },
   podiumPill: { display: "flex", alignItems: "center", gap: 6, background: "#FBF9F2", border: "1px solid #EDE8D9", borderRadius: 999, padding: "4px 10px 4px 4px" },
+  hero: { background: "linear-gradient(135deg, #0B5E22 0%, #0A7A3E 65%, #0068B3 100%)", borderRadius: 16, padding: "24px 22px 20px", marginTop: 16, color: "#F7F3E8", position: "relative", overflow: "hidden", boxShadow: "0 4px 18px rgba(11,94,34,0.25)" },
+  heroTag: { display: "inline-flex", alignItems: "center", gap: 6, background: "rgba(232,184,0,0.2)", border: "1px solid rgba(232,184,0,0.55)", color: "#F4D35E", borderRadius: 999, padding: "4px 11px", fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11, fontWeight: 700, letterSpacing: 0.4, textTransform: "uppercase" },
+  heroLink: { marginLeft: "auto", display: "flex", alignItems: "center", gap: 3, background: "transparent", border: "none", color: "#F4D35E", fontFamily: "'Inter', system-ui, sans-serif", fontSize: 12.5, fontWeight: 700, cursor: "pointer", padding: 0 },
+  newsChip: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11.5, fontWeight: 700, borderRadius: 999, padding: "3px 10px" },
+  newsCard: { background: "#fff", border: "1px solid #EDE8D9", borderRadius: 14, padding: "16px 16px 14px", display: "flex", flexDirection: "column", gap: 8, boxShadow: "0 1px 3px rgba(13,59,74,0.06)" },
+  statCard: { background: "#fff", border: "1px solid #EDE8D9", borderRadius: 12, padding: "12px 14px", display: "flex", alignItems: "center", gap: 12, minWidth: 0 },
   toast: { position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)", background: "#0B5E22", color: "#F7F3E8", padding: "10px 18px", borderRadius: 999, fontFamily: "'Inter', system-ui, sans-serif", fontSize: 13, display: "flex", alignItems: "center", gap: 8, boxShadow: "0 4px 14px rgba(0,0,0,0.25)" },
   lockBtn: { fontFamily: "'Inter', system-ui, sans-serif", fontSize: 11.5, fontWeight: 700, color: "#F7F3E8", background: "rgba(255,255,255,0.14)", border: "1px solid rgba(255,255,255,0.28)", borderRadius: 999, padding: "5px 11px", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 },
   lockBtnActive: { background: "#E8B800", color: "#0B5E22", border: "1px solid #E8B800" },
@@ -1680,50 +1543,4 @@ const CSS = `
 @keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }
 input[type=number]::-webkit-inner-spin-button { opacity: 0.4; }
 table { font-family: 'Inter', system-ui, sans-serif; }
-
-.classif-grid { display: grid; grid-template-columns: 1.7fr 1.1fr; gap: 16px; align-items: start; }
-.classif-grid > * { min-width: 0; }
-@media (max-width: 900px) {
-  .classif-grid { grid-template-columns: 1fr; }
-}
-@media (max-width: 480px) {
-  .etapa-mini-grid { grid-template-columns: repeat(2, 1fr) !important; }
-}
-@media (max-width: 380px) {
-  .stat-grid-2 { grid-template-columns: 1fr !important; }
-}
-* { box-sizing: border-box; }
-html, body { overflow-x: hidden; max-width: 100%; }
-
-/* ---- ondas do cabeçalho ---- */
-.wave-layer { position: absolute; left: 0; right: 0; bottom: -2px; height: 60px; overflow: hidden; pointer-events: none; }
-.wave-track { position: absolute; top: 0; left: 0; height: 100%; width: 200%; display: flex; animation: wave-slide 16s linear infinite; }
-.wave-track svg { width: 50%; height: 100%; flex-shrink: 0; }
-.wave-track.wave-slow { animation-duration: 26s; opacity: 0.55; }
-@keyframes wave-slide { from { transform: translateX(0); } to { transform: translateX(-50%); } }
-
-/* ---- peixinho nadando ---- */
-.swim-fish { position: absolute; top: 18px; left: 0; opacity: 0; pointer-events: none; animation: swim-across 24s ease-in-out infinite; animation-delay: 3s; }
-@keyframes swim-across {
-  0% { transform: translateX(-40px) translateY(0); opacity: 0; }
-  4% { opacity: 0.9; }
-  48% { transform: translateX(calc(100vw + 40px)) translateY(-14px); opacity: 0.9; }
-  52% { opacity: 0; }
-  100% { transform: translateX(calc(100vw + 40px)) translateY(-14px); opacity: 0; }
-}
-
-/* ---- linhas entrando ---- */
-@keyframes row-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-.row-anim { animation: row-in 0.42s ease both; }
-
-/* ---- brilho do pódio ---- */
-@keyframes podium-shine {
-  0% { box-shadow: 0 0 0 0 rgba(232,184,0,0); }
-  50% { box-shadow: 0 0 0 3px rgba(232,184,0,0.22); }
-  100% { box-shadow: 0 0 0 0 rgba(232,184,0,0); }
-}
-.podium-glow { animation: podium-shine 2.6s ease-in-out infinite; }
-@media (prefers-reduced-motion: reduce) {
-  .wave-track, .swim-fish, .row-anim, .podium-glow { animation: none !important; }
-}
 `;
