@@ -173,6 +173,9 @@ export default function ApepApp() {
   const [showLogin, setShowLogin] = useState(false);
   const [pinInput, setPinInput] = useState("");
   const [pinError, setPinError] = useState(false);
+  const [adminName, setAdminName] = useState("");
+  const [adminNameInput, setAdminNameInput] = useState("");
+  const [auditLogs, setAuditLogs] = useState([]);
 
   // ---- load ----
   useEffect(() => {
@@ -235,7 +238,27 @@ export default function ApepApp() {
     setTimeout(() => setToast(null), 2200);
   }
 
+  async function registrarAuditoria(acao, detalhes) {
+    if (!adminName) return;
+    try {
+      const { error } = await supabase.from("apep_auditoria").insert({
+        responsavel: adminName, acao, detalhes, created_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+    } catch (e) { console.error("Falha ao registrar auditoria", e); }
+  }
+
+  async function carregarAuditoria() {
+    const { data, error } = await supabase.from("apep_auditoria")
+      .select("id, responsavel, acao, detalhes, created_at")
+      .order("created_at", { ascending: false }).limit(300);
+    if (error) { console.error("Falha ao carregar histórico", error); showToast("Não foi possível carregar o histórico."); return; }
+    setAuditLogs(data || []);
+  }
+
   function updateEtapaInfo(n, campo, valor) {
+    const anterior = etapasInfo?.[n]?.[campo] ?? "";
+    if (String(anterior) !== String(valor)) registrarAuditoria("Alteração de etapa", `Etapa ${n}: ${campo} alterado de "${anterior}" para "${valor}"`);
     setEtapasInfo((prev) => ({ ...prev, [n]: { ...prev[n], [campo]: valor } }));
   }
 
@@ -254,6 +277,7 @@ export default function ApepApp() {
           updated_at: new Date().toISOString(),
         });
       if (error) throw error;
+      await registrarAuditoria("Salvamento", "Dados do campeonato salvos manualmente");
       showToast("Dados salvos com sucesso!");
     } catch (e) {
       console.error("Falha ao salvar", e);
@@ -264,8 +288,12 @@ export default function ApepApp() {
   }
 
   function tryLogin() {
-    if (pinInput === ADMIN_PIN) {
+    if (pinInput === ADMIN_PIN && adminNameInput.trim()) {
+      const nomeResponsavel = adminNameInput.trim();
+      setAdminName(nomeResponsavel);
+      setAdminNameInput("");
       setIsAdmin(true);
+      supabase.from("apep_auditoria").insert({ responsavel: nomeResponsavel, acao: "Login", detalhes: "Acesso à área administrativa" });
       setShowLogin(false);
       setPinInput("");
       setPinError(false);
@@ -275,16 +303,19 @@ export default function ApepApp() {
     }
   }
   function logout() {
+    registrarAuditoria("Logout", "Saída da área administrativa");
     setIsAdmin(false);
-    if (tab === "pescadores" || tab === "etapa") setTab("classificacao");
+    setAdminName("");
+    if (tab === "pescadores" || tab === "etapa" || tab === "historico") setTab("classificacao");
     showToast("Saiu da área da diretoria");
   }
   function goTab(id) {
-    if ((id === "pescadores" || id === "etapa") && !isAdmin) {
+    if ((id === "pescadores" || id === "etapa" || id === "historico") && !isAdmin) {
       setShowLogin(true);
       return;
     }
     setTab(id);
+    if (id === "historico" && isAdmin) carregarAuditoria();
   }
 
   // ---- pescadores CRUD ----
@@ -293,10 +324,13 @@ export default function ApepApp() {
     if (!nome) return;
     const id = "p_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
     setPescadores((prev) => [...prev, { id, nome, categoria: novoCat }]);
+    registrarAuditoria("Cadastro de pescador", `${nome} — categoria ${CATS[novoCat].label}`);
     setNovoNome("");
     showToast(`${nome} adicionado(a)`);
   }
   function removePescador(id) {
+    const removido = pescadores.find((p) => p.id === id);
+    registrarAuditoria("Remoção de pescador", removido ? removido.nome : id);
     setPescadores((prev) => prev.filter((p) => p.id !== id));
     setEtapas((prev) => {
       const next = {};
@@ -311,6 +345,7 @@ export default function ApepApp() {
     try {
       const dataUrl = await resizeImageFile(file, 240);
       setPescadores((prev) => prev.map((p) => (p.id === id ? { ...p, foto: dataUrl } : p)));
+      registrarAuditoria("Alteração de pescador", `Foto atualizada: ${pescadores.find((p) => p.id === id)?.nome || id}`);
     } catch (e) {
       console.error("Falha ao processar foto", e);
       showToast("Não foi possível carregar essa imagem.");
@@ -318,6 +353,9 @@ export default function ApepApp() {
   }
 
   function updateEntry(etapa, pescadorId, field, value) {
+    const pescador = pescadores.find((p) => p.id === pescadorId);
+    const anterior = etapas?.[etapa]?.[pescadorId]?.[field] ?? emptyEntry()[field];
+    if (String(anterior) !== String(value)) registrarAuditoria("Lançamento de resultado", `Etapa ${etapa} — ${pescador?.nome || pescadorId}: ${field} de "${anterior}" para "${value}"`);
     setEtapas((prev) => {
       const etapaData = { ...(prev[etapa] || {}) };
       const entry = { ...emptyEntry(), ...(etapaData[pescadorId] || {}) };
@@ -490,6 +528,10 @@ export default function ApepApp() {
       <Tabs tab={tab} setTab={goTab} isAdmin={isAdmin} />
 
       <div style={{ padding: "0 16px 40px", maxWidth: 1040, margin: "0 auto" }}>
+        {tab === "historico" && isAdmin && (
+          <HistoricoTab logs={auditLogs} onRefresh={carregarAuditoria} />
+        )}
+
         {tab === "pescadores" && isAdmin && (
           <PescadoresTab
             pescadores={pescadores}
@@ -521,7 +563,7 @@ export default function ApepApp() {
         )}
 
         {tab === "classificacao" && (
-          <ClassificacaoTab catAtual={catAtual} setCatAtual={setCatAtual} linhas={classificacaoGeral[catAtual] || []} totalKgGeral={totalKgGeral} proximaEtapa={proximaEtapa} etapasInfo={etapasInfo} />
+          <ClassificacaoTab catAtual={catAtual} setCatAtual={setCatAtual} linhas={classificacaoGeral[catAtual] || []} totalKgGeral={totalKgGeral} proximaEtapa={proximaEtapa} etapasInfo={etapasInfo} rankingEtapa={rankingEtapa} etapas={etapas} pescadores={pescadores} />
         )}
 
         {tab === "evolucao" && (
@@ -551,12 +593,15 @@ export default function ApepApp() {
         <LoginModal
           pinInput={pinInput}
           setPinInput={setPinInput}
+          adminNameInput={adminNameInput}
+          setAdminNameInput={setAdminNameInput}
           pinError={pinError}
           setPinError={setPinError}
           onConfirm={tryLogin}
           onClose={() => {
             setShowLogin(false);
             setPinInput("");
+            setAdminNameInput("");
             setPinError(false);
           }}
         />
@@ -565,7 +610,7 @@ export default function ApepApp() {
   );
 }
 
-function LoginModal({ pinInput, setPinInput, pinError, setPinError, onConfirm, onClose }) {
+function LoginModal({ pinInput, setPinInput, adminNameInput, setAdminNameInput, pinError, setPinError, onConfirm, onClose }) {
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.modalCard} onClick={(e) => e.stopPropagation()}>
@@ -582,6 +627,14 @@ function LoginModal({ pinInput, setPinInput, pinError, setPinError, onConfirm, o
           Digite a senha para cadastrar pescadores e lançar as etapas.
         </div>
         <input
+          type="text"
+          value={adminNameInput}
+          onChange={(e) => setAdminNameInput(e.target.value)}
+          placeholder="Seu nome (responsável)"
+          autoFocus
+          style={{ ...S.input, width: "100%", boxSizing: "border-box", textAlign: "center", marginBottom: 9 }}
+        />
+        <input
           type="password"
           value={pinInput}
           onChange={(e) => {
@@ -590,12 +643,11 @@ function LoginModal({ pinInput, setPinInput, pinError, setPinError, onConfirm, o
           }}
           onKeyDown={(e) => e.key === "Enter" && onConfirm()}
           placeholder="Senha da diretoria"
-          autoFocus
           style={{ ...S.input, width: "100%", boxSizing: "border-box", textAlign: "center", letterSpacing: 1 }}
         />
         {pinError && (
           <div style={{ display: "flex", alignItems: "center", gap: 5, color: "#c04a4a", fontFamily: S.fonts.body, fontSize: 12.5, marginTop: 8, justifyContent: "center" }}>
-            <AlertTriangle size={13} /> Senha incorreta.
+            <AlertTriangle size={13} /> Informe seu nome e confira a senha.
           </div>
         )}
         <button onClick={onConfirm} style={{ ...S.btnPrimary, width: "100%", justifyContent: "center", marginTop: 14 }}>
@@ -676,6 +728,7 @@ function Tabs({ tab, setTab, isAdmin }) {
     { id: "premios", label: "Prêmios", icon: Award },
     { id: "etapa", label: "Lançar Etapa", icon: Scale, restrito: true },
     { id: "pescadores", label: "Pescadores", icon: Users, restrito: true },
+    { id: "historico", label: "Histórico", icon: Calendar, restrito: true },
   ];
   return (
     <div style={S.tabsWrap}>
@@ -942,6 +995,7 @@ function EtapaTab({ etapaAtual, setEtapaAtual, catAtual, setCatAtual, pescadores
         )}
       </div>
 
+      {ranking.length > 0 && <Podio linhas={ranking.slice(0, 3).map((r) => ({ posicao: r.pos, pescador: r.pescador, total: r.peso, pontos: r.pontos }))} cat={catAtual} titulo={`Pódio — ${etapaTitulo(etapaAtual, etapasInfo)}`} etapa />}
       {ranking.length > 0 && (
         <div style={{ ...S.card, marginTop: 16 }}>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "flex-start", justifyContent: "space-between" }}>
@@ -985,7 +1039,7 @@ function PosicaoBadge({ pos }) {
 
 /* ================= CLASSIFICAÇÃO GERAL ================= */
 
-function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral, proximaEtapa, etapasInfo }) {
+function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral, proximaEtapa, etapasInfo, rankingEtapa, etapas, pescadores }) {
   const topN = TOP_GERAL[catAtual];
   const [selecionadoId, setSelecionadoId] = useState(null);
 
@@ -1055,6 +1109,10 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral, proxima
         </div>
       </div>
 
+      <DestaquesEtapas etapasInfo={etapasInfo} etapas={etapas} pescadores={pescadores} rankingEtapa={rankingEtapa} />
+
+      {linhas.length > 0 && <Podio linhas={linhas.slice(0, 3)} cat={catAtual} titulo="Pódio geral" />}
+
       {linhas.length === 0 ? (
         <div style={{ ...S.card, marginTop: 14 }}>
           <div style={S.emptyNote}>Nenhum resultado lançado ainda para {CATS[catAtual].label}.</div>
@@ -1107,6 +1165,64 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral, proxima
       )}
     </div>
   );
+}
+
+function Podio({ linhas, cat, titulo, etapa = false }) {
+  const ordem = [linhas[1], linhas[0], linhas[2]].filter(Boolean);
+  const cores = { 1: "#D5A400", 2: "#89949D", 3: "#A96A43" };
+  return <div style={{ ...S.card, marginTop: 14 }}>
+    <SectionTitle icon={Trophy} title={titulo} subtitle="Os três primeiros colocados" />
+    <div style={{ display: "flex", alignItems: "end", justifyContent: "center", gap: 10, padding: "12px 0 2px" }}>
+      {ordem.map((l) => <div key={l.pescador.id} style={{ flex: 1, maxWidth: 190, textAlign: "center", minWidth: 0 }}>
+        <Avatar foto={l.pescador.foto} nome={l.pescador.nome} size={48} cor={CATS[cat].color} />
+        <div style={{ fontFamily: S.fonts.body, fontWeight: 700, color: S.colors.deep, fontSize: 12, marginTop: 6, overflowWrap: "anywhere" }}>{l.pescador.nome}</div>
+        <div style={{ fontSize: 11, color: "#718084", margin: "3px 0 7px" }}>{etapa ? `${fmt(l.total)} kg` : `${fmtPts(l.total)} pts`}</div>
+        <div style={{ height: l.posicao === 1 ? 76 : l.posicao === 2 ? 58 : 44, borderRadius: "9px 9px 0 0", background: cores[l.posicao], color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: S.fonts.display, fontSize: 22, fontWeight: 800 }}>{l.posicao}º</div>
+      </div>)}
+    </div>
+  </div>;
+}
+
+function DestaquesEtapas({ etapasInfo, etapas, pescadores, rankingEtapa }) {
+  const cards = [];
+  for (let n = 1; n <= N_ETAPAS; n++) {
+    const info = etapasInfo?.[n] || {};
+    const lancamentos = Object.values(etapas?.[n] || {}).filter((e) => e && (e.peso !== "" || e.quantidade !== "" || e.raia !== ""));
+    if (!lancamentos.length && !info.local && !info.data) continue;
+    const rankings = [...rankingEtapa(n, "M"), ...rankingEtapa(n, "F")].sort((a,b) => b.peso-a.peso);
+    const campeao = rankings[0];
+    const pesoTotal = lancamentos.reduce((s,e) => s + (parseFloat(e.peso) || 0) + (parseFloat(e.peixesExoticos) || 0) * 0.5, 0);
+    const peixes = lancamentos.reduce((s,e) => s + (parseInt(e.quantidade,10) || 0), 0);
+    cards.push({ n, info, lancamentos: lancamentos.length, pesoTotal, peixes, campeao });
+  }
+  if (!cards.length) return null;
+  return <div style={{ ...S.card, marginTop: 14 }}>
+    <SectionTitle icon={Waves} title="Destaques das etapas" subtitle="Notícias automáticas criadas com os resultados lançados no campeonato." />
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+      {cards.slice().reverse().map((c) => <article key={c.n} style={{ border: "1px solid #E8E4D8", borderRadius: 12, padding: 14, background: "#FFFEFA" }}>
+        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 1, color: "#0B7A36", textTransform: "uppercase" }}>Notícia • Etapa {c.n}</div>
+        <div style={{ fontFamily: S.fonts.display, fontSize: 16, fontWeight: 700, color: S.colors.deep, margin: "5px 0" }}>{c.info.local || `Etapa ${c.n}`} {c.info.data ? ` — ${fmtData(c.info.data)}` : ""}</div>
+        <p style={{ fontFamily: S.fonts.body, fontSize: 12.5, lineHeight: 1.5, color: "#536469", margin: "7px 0" }}>{c.campeao ? `${c.campeao.pescador.nome} liderou os resultados com ${fmt(c.campeao.peso)} kg e ${fmtPts(c.campeao.pontos)} pontos.` : `Os dados da etapa ${c.n} já começaram a ser registrados.`}</p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}><span style={{ background: "#F0F4EA", color: "#43614A", borderRadius: 20, padding: "4px 8px", fontSize: 10, fontWeight: 700 }}>{c.lancamentos} pescadores</span><span style={{ background: "#F0F4EA", color: "#43614A", borderRadius: 20, padding: "4px 8px", fontSize: 10, fontWeight: 700 }}>{fmt(c.pesoTotal)} kg</span><span style={{ background: "#F0F4EA", color: "#43614A", borderRadius: 20, padding: "4px 8px", fontSize: 10, fontWeight: 700 }}>{c.peixes} peixes</span></div>
+      </article>)}
+    </div>
+  </div>;
+}
+
+function HistoricoTab({ logs, onRefresh }) {
+  return <div style={S.card}>
+    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+      <SectionTitle icon={Calendar} title="Histórico administrativo" subtitle="Acessos e alterações registrados no sistema." />
+      <button onClick={onRefresh} style={S.btnGhost}>Atualizar</button>
+    </div>
+    {!logs.length ? <div style={S.emptyNote}>Nenhum registro encontrado.</div> : <div style={{ display: "grid", gap: 8 }}>
+      {logs.map((l) => <div key={l.id} style={{ borderBottom: "1px solid #eee9dc", padding: "9px 0" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}><strong style={{ color: S.colors.deep, fontSize: 13 }}>{l.acao}</strong><span style={{ color: "#839094", fontSize: 11 }}>{new Date(l.created_at).toLocaleString("pt-BR")}</span></div>
+        <div style={{ fontSize: 12, color: "#526267", marginTop: 3 }}>{l.detalhes}</div>
+        <div style={{ fontSize: 11, color: "#0B7A36", marginTop: 3 }}>Responsável: {l.responsavel}</div>
+      </div>)}
+    </div>}
+  </div>;
 }
 
 /* ================= PAINEL DE DESTAQUE DO PESCADOR ================= */
