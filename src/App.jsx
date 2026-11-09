@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Fish, Trophy, Medal, Users, Calendar, Plus, Trash2, ChevronRight,
   Anchor, Waves, Award, Scale, X, Loader2, Check, AlertTriangle, Lock, LockOpen, TrendingUp, Weight,
-  Camera, FileDown, User
+  Camera, FileDown, User, CloudSun, Wind, Gauge, Thermometer, CloudRain, RefreshCw, ExternalLink
 } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer
@@ -562,6 +562,8 @@ export default function ApepApp() {
           />
         )}
 
+        {tab === "clima" && <ClimaNatalTab />}
+
         {tab === "classificacao" && (
           <ClassificacaoTab catAtual={catAtual} setCatAtual={setCatAtual} linhas={classificacaoGeral[catAtual] || []} totalKgGeral={totalKgGeral} proximaEtapa={proximaEtapa} etapasInfo={etapasInfo} rankingEtapa={rankingEtapa} etapas={etapas} pescadores={pescadores} />
         )}
@@ -721,9 +723,235 @@ function Header({ saving, isAdmin, onLock }) {
   );
 }
 
+
+/* ---------------------------------------------------------------
+   CENTRAL DO PESCADOR — NATAL/RN
+   Meteorologia: Open-Meteo (previsão, não estação local).
+   Marés: link para a tábua oficial da Marinha do Brasil.
+--------------------------------------------------------------- */
+const NATAL_COORDS = { latitude: -5.7793, longitude: -35.2009 };
+
+function analisarCondicoesNatal(m) {
+  if (!m) return "Aguardando dados meteorológicos para montar a leitura das condições.";
+  const vento = Number(m.wind_speed_10m);
+  const rajada = Number(m.wind_gusts_10m);
+  const onda = Number(m.wave_height);
+  const chuva = Number(m.precipitation);
+  const pressao = Number(m.pressure_msl);
+  const pontos = [];
+  if (Number.isFinite(vento)) {
+    if (vento <= 10) pontos.push("Vento fraco no momento, condição que tende a facilitar a apresentação da linha.");
+    else if (vento <= 20) pontos.push("Vento moderado: vale observar a direção e ajustar o peso e a montagem.");
+    else pontos.push("Vento forte: a pescaria pode ficar mais difícil e exige atenção redobrada.");
+  }
+  if (Number.isFinite(rajada) && rajada >= 30) pontos.push("Há previsão/registro de rajadas fortes; redobre o cuidado com arremessos e estruturas.");
+  if (Number.isFinite(onda)) {
+    if (onda <= 0.8) pontos.push("Ondulação baixa na previsão marítima.");
+    else if (onda <= 1.5) pontos.push("Ondulação moderada; confira as condições reais antes de entrar na água.");
+    else pontos.push("Ondulação elevada: priorize a segurança e evite áreas expostas.");
+  }
+  if (Number.isFinite(chuva) && chuva > 0) pontos.push("Há precipitação indicada para o período.");
+  if (Number.isFinite(pressao)) {
+    if (pressao < 1005) pontos.push("Pressão atmosférica relativamente baixa.");
+    else if (pressao > 1020) pontos.push("Pressão atmosférica relativamente alta.");
+  }
+  return pontos.length
+    ? pontos.join(" ")
+    : "Os dados atuais não permitem uma conclusão forte. Confira vento, ondas e condições observadas no local.";
+}
+
+function climaValor(v, unidade = "", casas = 0) {
+  const n = Number(v);
+  return v === null || v === undefined || !Number.isFinite(n)
+    ? "—"
+    : `${n.toLocaleString("pt-BR", { maximumFractionDigits: casas })}${unidade}`;
+}
+
+function ClimaNatalTab() {
+  const [tempo, setTempo] = useState(null);
+  const [mar, setMar] = useState(null);
+  const [carregando, setCarregando] = useState(true);
+  const [erro, setErro] = useState("");
+  const [atualizado, setAtualizado] = useState(null);
+  const [analiseIA, setAnaliseIA] = useState("");
+  const [gerandoAnalise, setGerandoAnalise] = useState(false);
+
+  const carregar = useCallback(async () => {
+    setCarregando(true);
+    setErro("");
+    try {
+      const base = `latitude=${NATAL_COORDS.latitude}&longitude=${NATAL_COORDS.longitude}&timezone=America%2FSao_Paulo`;
+      const climaUrl = `https://api.open-meteo.com/v1/forecast?${base}&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,rain,weather_code,pressure_msl,wind_speed_10m,wind_direction_10m,wind_gusts_10m&hourly=temperature_2m,precipitation_probability,wind_speed_10m,wind_direction_10m,wind_gusts_10m&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,wind_speed_10m_max,wind_gusts_10m_max&forecast_days=7`;
+      const marUrl = `https://marine-api.open-meteo.com/v1/marine?${base}&current=wave_height,wave_direction,wave_period&hourly=wave_height,wave_direction,wave_period&forecast_days=3`;
+      const [rClima, rMar] = await Promise.all([fetch(climaUrl), fetch(marUrl)]);
+      if (!rClima.ok) throw new Error("Não foi possível consultar a previsão do tempo.");
+      const dClima = await rClima.json();
+      const dMar = rMar.ok ? await rMar.json() : null;
+      setTempo(dClima);
+      setMar(dMar);
+      setAtualizado(new Date());
+      setAnaliseIA("");
+    } catch (e) {
+      setErro(e.message || "Falha ao carregar os dados. Tente novamente.");
+    } finally {
+      setCarregando(false);
+    }
+  }, []);
+
+  useEffect(() => { carregar(); }, [carregar]);
+
+  const current = tempo?.current;
+  const ondas = mar?.current;
+  const dias = tempo?.daily;
+  const analiseAutomatica = analisarCondicoesNatal({
+    ...current,
+    wave_height: ondas?.wave_height,
+  });
+
+  async function gerarAnalise() {
+    if (!current) return;
+    setGerandoAnalise(true);
+    setAnaliseIA("");
+    const pacote = {
+      local: "Natal, Rio Grande do Norte, Brasil",
+      fonte: "Open-Meteo",
+      meteorologia_atual: current,
+      ondas_atual: ondas,
+      previsao_7_dias: dias,
+      instrucao: "Analise as condições para pesca de praia de forma prudente. Explique vento, rajadas, ondas, pressão e chuva. Não prometa captura, não invente marés nem declare seguro entrar no mar. Diferencie previsão de observação e recomende conferir avisos oficiais."
+    };
+    try {
+      // A função Supabase é opcional. Configure a Edge Function e a chave
+      // OPENAI_API_KEY no servidor para habilitar a análise por IA generativa.
+      const { data, error } = await supabase.functions.invoke("apep-analise-pesca", { body: pacote });
+      if (error) throw error;
+      const texto = data?.analise || data?.text;
+      if (!texto) throw new Error("A função não retornou uma análise.");
+      setAnaliseIA(texto);
+    } catch (e) {
+      setAnaliseIA(`A análise generativa ainda não está configurada. Leitura automática dos dados: ${analiseAutomatica}`);
+    } finally {
+      setGerandoAnalise(false);
+    }
+  }
+
+  const card = {
+    background: "#fff",
+    border: "1px solid #EDE8D9",
+    borderRadius: 14,
+    padding: 16,
+    minWidth: 0,
+    boxShadow: "0 3px 12px rgba(20,50,30,0.04)",
+  };
+  const label = { color: "#77847C", fontSize: 11, fontWeight: 700, letterSpacing: .5, textTransform: "uppercase" };
+  const big = { color: "#123D27", fontSize: 25, fontWeight: 800, marginTop: 5, lineHeight: 1.15 };
+  const diasSemana = (iso) => new Date(`${iso}T12:00:00`).toLocaleDateString("pt-BR", { weekday: "short", day: "2-digit", month: "2-digit" });
+  const direcao = (graus) => {
+    if (graus === null || graus === undefined || !Number.isFinite(Number(graus))) return "—";
+    return ["N","NE","L","SE","S","SO","O","NO"][Math.round(Number(graus) / 45) % 8];
+  };
+
+  return (
+    <div style={{ paddingTop: 20, display: "grid", gap: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ color: "#0B5E22", fontSize: 11, fontWeight: 800, letterSpacing: 1.4 }}>CENTRAL DO PESCADOR</div>
+          <h2 style={{ fontFamily: "'Fraunces',serif", color: "#123D27", fontSize: 25, margin: "5px 0" }}>Mar & clima — Natal/RN</h2>
+          <div style={{ color: "#7c8a8e", fontSize: 12 }}>Ponto de referência: região costeira de Natal</div>
+        </div>
+        <button onClick={carregar} disabled={carregando} style={{ border: "1px solid #D8E2D7", background: "#F4F8F1", color: "#0B5E22", borderRadius: 9, padding: "9px 12px", display: "flex", alignItems: "center", gap: 7, cursor: "pointer", fontWeight: 700 }}>
+          <RefreshCw size={15} className={carregando ? "animate-spin" : ""} /> Atualizar
+        </button>
+      </div>
+
+      {erro && <div style={{ ...card, color: "#9B3B24", background: "#FFF7F3" }}>{erro}</div>}
+      {carregando && !current && <div style={{ ...card, color: "#617267" }}><Loader2 className="animate-spin" size={18} style={{ verticalAlign: "middle", marginRight: 8 }} /> Consultando previsão para Natal…</div>}
+
+      {current && <>
+        <div style={{ ...card, background: "linear-gradient(120deg,#0B5E22,#174D66)", color: "#fff" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 11, opacity: .8, fontWeight: 700, letterSpacing: 1 }}>CONDIÇÕES AGORA · NATAL/RN</div>
+              <div style={{ fontSize: 38, fontWeight: 800, marginTop: 5 }}>{climaValor(current.temperature_2m, "°C")}</div>
+              <div style={{ fontSize: 13, opacity: .9 }}>Sensação de {climaValor(current.apparent_temperature, "°C")} · Umidade {climaValor(current.relative_humidity_2m, "%")}</div>
+            </div>
+            <CloudSun size={54} style={{ opacity: .9 }} />
+          </div>
+          <div style={{ marginTop: 12, fontSize: 11, opacity: .72 }}>Atualizado em {atualizado?.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) || "—"} · Dados de previsão/modelo</div>
+        </div>
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(145px,1fr))", gap: 10 }}>
+          {[
+            { icon: Wind, title: "Vento", value: climaValor(current.wind_speed_10m, " km/h"), sub: direcao(current.wind_direction_10m) },
+            { icon: Wind, title: "Rajadas", value: climaValor(current.wind_gusts_10m, " km/h"), sub: "velocidade máxima estimada" },
+            { icon: Gauge, title: "Pressão", value: climaValor(current.pressure_msl, " hPa"), sub: "ao nível do mar" },
+            { icon: CloudRain, title: "Chuva agora", value: climaValor(current.precipitation, " mm", 1), sub: `Chuva: ${climaValor(current.rain, " mm", 1)}` },
+            { icon: Waves, title: "Altura das ondas", value: climaValor(ondas?.wave_height, " m", 1), sub: `Direção ${direcao(ondas?.wave_direction)} · período ${climaValor(ondas?.wave_period, " s", 0)}` },
+            { icon: Thermometer, title: "Temperatura", value: climaValor(current.temperature_2m, "°C"), sub: `Sensação ${climaValor(current.apparent_temperature, "°C")}` },
+          ].map((item) => {
+            const Icon = item.icon;
+            return <div key={item.title} style={card}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7, color: "#0B5E22" }}><Icon size={16} /><span style={label}>{item.title}</span></div>
+              <div style={big}>{item.value}</div>
+              <div style={{ color: "#7c8a8e", fontSize: 11, marginTop: 5 }}>{item.sub}</div>
+            </div>;
+          })}
+        </div>
+
+        <div style={card}>
+          <div style={{ fontFamily: "'Fraunces',serif", color: "#123D27", fontSize: 19, fontWeight: 700, marginBottom: 8 }}>Leitura das condições para pesca</div>
+          <p style={{ color: "#4F6257", fontSize: 13, lineHeight: 1.65, margin: "0 0 12px" }}>{analiseAutomatica}</p>
+          <button onClick={gerarAnalise} disabled={gerandoAnalise} style={{ background: "#0B5E22", color: "#fff", border: 0, borderRadius: 8, padding: "10px 13px", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 700 }}>
+            {gerandoAnalise ? <Loader2 size={15} className="animate-spin" /> : <CloudSun size={15} />} Gerar análise com IA
+          </button>
+          {analiseIA && <div style={{ marginTop: 12, padding: 13, background: "#F4F8F1", borderRadius: 9, color: "#365443", fontSize: 13, lineHeight: 1.65, whiteSpace: "pre-wrap" }}>{analiseIA}</div>}
+        </div>
+
+        <div style={card}>
+          <div style={{ fontFamily: "'Fraunces',serif", color: "#123D27", fontSize: 19, fontWeight: 700, marginBottom: 12 }}>Previsão para os próximos 7 dias</div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(115px,1fr))", gap: 8 }}>
+            {(dias?.time || []).map((dia, i) => (
+              <div key={dia} style={{ background: "#F8F7F0", borderRadius: 9, padding: 10, textAlign: "center" }}>
+                <div style={{ color: "#65756B", fontSize: 11, fontWeight: 700, textTransform: "capitalize" }}>{diasSemana(dia)}</div>
+                <div style={{ color: "#123D27", fontWeight: 800, fontSize: 17, margin: "7px 0" }}>{climaValor(dias.temperature_2m_max?.[i], "°")} / {climaValor(dias.temperature_2m_min?.[i], "°")}</div>
+                <div style={{ color: "#718078", fontSize: 10 }}>Vento máx. {climaValor(dias.wind_speed_10m_max?.[i], " km/h")}</div>
+                <div style={{ color: "#718078", fontSize: 10, marginTop: 4 }}>Chuva até {climaValor(dias.precipitation_probability_max?.[i], "%")}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </>}
+
+      <div style={{ ...card, borderLeft: "4px solid #D1A52B" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#123D27", fontWeight: 800, marginBottom: 7 }}><Waves size={18} /> Tábua de marés — Porto de Natal</div>
+        <p style={{ color: "#65756B", fontSize: 12.5, lineHeight: 1.6, margin: "0 0 10px" }}>
+          A tábua de marés deve ser consultada na fonte oficial da Marinha do Brasil. O painel não estima horários ou alturas de maré: usa o Porto de Natal como referência regional.
+        </p>
+        <a href="https://www.marinha.mil.br/chm/dados-do-segnav/dados-de-mare-mapa" target="_blank" rel="noreferrer" style={{ color: "#0B5E22", fontWeight: 800, fontSize: 13, display: "inline-flex", alignItems: "center", gap: 6 }}>
+          Consultar marés oficiais da Marinha <ExternalLink size={13} />
+        </a>
+      </div>
+
+      <div style={{ ...card, background: "#FFF9E9" }}>
+        <div style={{ color: "#765B16", fontWeight: 800, fontSize: 12, marginBottom: 5 }}>SEGURANÇA E LIMITAÇÕES</div>
+        <div style={{ color: "#746644", fontSize: 11.5, lineHeight: 1.6 }}>
+          As informações são previsões de modelos e podem diferir das condições na praia. Ondas e vento mudam rapidamente. Antes de pescar, confira a observação local e os avisos da Marinha. Este painel não substitui boletins oficiais nem avaliação de segurança no local.
+        </div>
+        <a href="https://www.marinha.mil.br/chm/dados-do-segnav/avisos-de-mau-tempo" target="_blank" rel="noreferrer" style={{ color: "#765B16", fontSize: 12, fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 6, marginTop: 9 }}>
+          Avisos de mau tempo da Marinha <ExternalLink size={12} />
+        </a>
+      </div>
+      <div style={{ color: "#8A958D", fontSize: 10.5, textAlign: "center" }}>
+        Meteorologia e previsão marítima: Open-Meteo · Coordenadas de referência de Natal/RN · Não representa medição em cada praia.
+      </div>
+    </div>
+  );
+}
+
 function Tabs({ tab, setTab, isAdmin }) {
   const items = [
     { id: "classificacao", label: "Classificação", icon: Trophy },
+    { id: "clima", label: "Mar & Clima", icon: CloudSun },
     { id: "evolucao", label: "Evolução", icon: TrendingUp },
     { id: "premios", label: "Prêmios", icon: Award },
     { id: "etapa", label: "Lançar Etapa", icon: Scale, restrito: true },
