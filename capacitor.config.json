@@ -1,0 +1,9 @@
+{
+  "appId": "com.apep.campeonato2026",
+  "appName": "APEP 2026",
+  "webDir": "dist",
+  "android": {
+    "backgroundColor": "#F7F3E8",
+    "adjustMarginsForEdgeToEdge": "auto"
+  }
+}
