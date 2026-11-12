@@ -10,6 +10,7 @@ import {
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { supabase } from "./supabaseClient";
+import TideTable from "./TideTable.jsx";
 
 /* ---------------------------------------------------------------
    TABELA COSAPYL — pontuação por posição (1ª a 30ª colocação)
@@ -67,7 +68,6 @@ function etapaTitulo(n, etapasInfo) {
   return `Etapa ${n} — ${partes.join(" · ")}`;
 }
 
-const ADMIN_PIN = "APEP2026";
 
 function resizeImageFile(file, size = 240) {
   return new Promise((resolve, reject) => {
@@ -163,7 +163,7 @@ export default function ApepApp() {
     for (let i = 1; i <= N_ETAPAS; i++) obj[i] = { local: "", data: "" };
     return obj;
   });
-  const [tab, setTab] = useState("classificacao");
+  const [tab, setTab] = useState("inicio");
   const [catAtual, setCatAtual] = useState("M");
   const [etapaAtual, setEtapaAtual] = useState(1);
   const [novoNome, setNovoNome] = useState("");
@@ -171,11 +171,49 @@ export default function ApepApp() {
   const [toast, setToast] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
-  const [pinInput, setPinInput] = useState("");
-  const [pinError, setPinError] = useState(false);
+  const [adminEmailInput, setAdminEmailInput] = useState("");
+  const [adminPasswordInput, setAdminPasswordInput] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginPending, setLoginPending] = useState(false);
   const [adminName, setAdminName] = useState("");
-  const [adminNameInput, setAdminNameInput] = useState("");
   const [auditLogs, setAuditLogs] = useState([]);
+
+  // Restore a director's authenticated session on reload and revoke access
+  // immediately when Supabase signs the user out.
+  useEffect(() => {
+    let active = true;
+    const restoreDirector = async () => {
+      try {
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (!active || sessionError || !session?.user) return;
+        const { data: director, error } = await supabase
+          .from("apep_diretores")
+          .select("nome, ativo")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+        if (!active) return;
+        if (error || !director?.ativo) {
+          await supabase.auth.signOut();
+          return;
+        }
+        setAdminName(director.nome || session.user.email || "Diretoria");
+        setIsAdmin(true);
+      } catch (error) {
+        console.error("Falha ao restaurar sessão da diretoria", error);
+      }
+    };
+    restoreDirector();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!session || event === "SIGNED_OUT") {
+        setIsAdmin(false);
+        setAdminName("");
+      }
+    });
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   // ---- load ----
   useEffect(() => {
@@ -229,9 +267,9 @@ export default function ApepApp() {
   }, []);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !isAdmin) return;
     persist(pescadores, etapas, etapasInfo);
-  }, [pescadores, etapas, etapasInfo, loaded, persist]);
+  }, [pescadores, etapas, etapasInfo, loaded, isAdmin, persist]);
 
   function showToast(msg) {
     setToast(msg);
@@ -241,14 +279,16 @@ export default function ApepApp() {
   async function registrarAuditoria(acao, detalhes) {
     if (!adminName) return;
     try {
+      const { data: { user } } = await supabase.auth.getUser();
       const { error } = await supabase.from("apep_auditoria").insert({
-        responsavel: adminName, acao, detalhes, created_at: new Date().toISOString(),
+        user_id: user?.id, responsavel: adminName, acao, detalhes, created_at: new Date().toISOString(),
       });
       if (error) throw error;
     } catch (e) { console.error("Falha ao registrar auditoria", e); }
   }
 
   async function carregarAuditoria() {
+    if (!isAdmin) return;
     const { data, error } = await supabase.from("apep_auditoria")
       .select("id, responsavel, acao, detalhes, created_at")
       .order("created_at", { ascending: false }).limit(300);
@@ -287,23 +327,44 @@ export default function ApepApp() {
     }
   }
 
-  function tryLogin() {
-    if (pinInput === ADMIN_PIN && adminNameInput.trim()) {
-      const nomeResponsavel = adminNameInput.trim();
+  async function tryLogin() {
+    if (loginPending) return;
+    setLoginPending(true);
+    setLoginError("");
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: adminEmailInput.trim(),
+        password: adminPasswordInput,
+      });
+      if (error || !data.user) throw new Error("E-mail ou senha inválidos.");
+      const { data: director, error: directorError } = await supabase
+        .from("apep_diretores")
+        .select("nome, ativo")
+        .eq("user_id", data.user.id)
+        .maybeSingle();
+      if (directorError || !director?.ativo) {
+        await supabase.auth.signOut();
+        throw new Error("Esta conta ainda não tem acesso à diretoria.");
+      }
+      const nomeResponsavel = director.nome || data.user.email || "Diretoria";
       setAdminName(nomeResponsavel);
-      setAdminNameInput("");
       setIsAdmin(true);
-      supabase.from("apep_auditoria").insert({ responsavel: nomeResponsavel, acao: "Login", detalhes: "Acesso à área administrativa" });
       setShowLogin(false);
-      setPinInput("");
-      setPinError(false);
+      setAdminPasswordInput("");
+      await supabase.from("apep_auditoria").insert({
+        user_id: data.user.id, responsavel: nomeResponsavel,
+        acao: "Login", detalhes: "Acesso à área administrativa",
+      });
       showToast("Área da diretoria liberada");
-    } else {
-      setPinError(true);
+    } catch (error) {
+      setLoginError(error.message || "Não foi possível entrar. Tente novamente.");
+    } finally {
+      setLoginPending(false);
     }
   }
-  function logout() {
-    registrarAuditoria("Logout", "Saída da área administrativa");
+  async function logout() {
+    await registrarAuditoria("Logout", "Saída da área administrativa");
+    await supabase.auth.signOut();
     setIsAdmin(false);
     setAdminName("");
     if (tab === "pescadores" || tab === "etapa" || tab === "historico") setTab("classificacao");
@@ -562,7 +623,23 @@ export default function ApepApp() {
           />
         )}
 
-        {tab === "clima" && <ClimaNatalTab />}
+        {tab === "inicio" && (
+          <InicioTab
+            catAtual={catAtual}
+            setCatAtual={setCatAtual}
+            linhas={classificacaoGeral[catAtual] || []}
+            totalKgGeral={totalKgGeral}
+            proximaEtapa={proximaEtapa}
+            etapasInfo={etapasInfo}
+            etapas={etapas}
+            pescadores={pescadores}
+            rankingEtapa={rankingEtapa}
+            onVerGeral={() => setTab("classificacao")}
+            onVerMar={() => setTab("clima")}
+          />
+        )}
+
+        {tab === "clima" && <ClimaNatalTab onViewTides={() => setTab("clima")} />}
 
         {tab === "classificacao" && (
           <ClassificacaoTab catAtual={catAtual} setCatAtual={setCatAtual} linhas={classificacaoGeral[catAtual] || []} totalKgGeral={totalKgGeral} proximaEtapa={proximaEtapa} etapasInfo={etapasInfo} rankingEtapa={rankingEtapa} etapas={etapas} pescadores={pescadores} />
@@ -593,18 +670,18 @@ export default function ApepApp() {
 
       {showLogin && (
         <LoginModal
-          pinInput={pinInput}
-          setPinInput={setPinInput}
-          adminNameInput={adminNameInput}
-          setAdminNameInput={setAdminNameInput}
-          pinError={pinError}
-          setPinError={setPinError}
+          email={adminEmailInput}
+          setEmail={setAdminEmailInput}
+          password={adminPasswordInput}
+          setPassword={setAdminPasswordInput}
+          error={loginError}
+          setError={setLoginError}
+          pending={loginPending}
           onConfirm={tryLogin}
           onClose={() => {
             setShowLogin(false);
-            setPinInput("");
-            setAdminNameInput("");
-            setPinError(false);
+            setAdminPasswordInput("");
+            setLoginError("");
           }}
         />
       )}
@@ -612,7 +689,7 @@ export default function ApepApp() {
   );
 }
 
-function LoginModal({ pinInput, setPinInput, adminNameInput, setAdminNameInput, pinError, setPinError, onConfirm, onClose }) {
+function LoginModal({ email, setEmail, password, setPassword, error, setError, pending, onConfirm, onClose }) {
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.modalCard} onClick={(e) => e.stopPropagation()}>
@@ -626,34 +703,37 @@ function LoginModal({ pinInput, setPinInput, adminNameInput, setAdminNameInput, 
           Área da Diretoria
         </div>
         <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, color: "#7c8a8e", textAlign: "center", marginTop: 4, marginBottom: 16 }}>
-          Digite a senha para cadastrar pescadores e lançar as etapas.
+          Entre com sua conta autorizada da diretoria.
         </div>
         <input
-          type="text"
-          value={adminNameInput}
-          onChange={(e) => setAdminNameInput(e.target.value)}
-          placeholder="Seu nome (responsável)"
+          type="email"
+          value={email}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            setError("");
+          }}
+          placeholder="E-mail"
           autoFocus
           style={{ ...S.input, width: "100%", boxSizing: "border-box", textAlign: "center", marginBottom: 9 }}
         />
         <input
           type="password"
-          value={pinInput}
+          value={password}
           onChange={(e) => {
-            setPinInput(e.target.value);
-            setPinError(false);
+            setPassword(e.target.value);
+            setError("");
           }}
           onKeyDown={(e) => e.key === "Enter" && onConfirm()}
-          placeholder="Senha da diretoria"
+          placeholder="Sua senha"
           style={{ ...S.input, width: "100%", boxSizing: "border-box", textAlign: "center", letterSpacing: 1 }}
         />
-        {pinError && (
+        {error && (
           <div style={{ display: "flex", alignItems: "center", gap: 5, color: "#c04a4a", fontFamily: S.fonts.body, fontSize: 12.5, marginTop: 8, justifyContent: "center" }}>
-            <AlertTriangle size={13} /> Informe seu nome e confira a senha.
+            <AlertTriangle size={13} /> {error}
           </div>
         )}
-        <button onClick={onConfirm} style={{ ...S.btnPrimary, width: "100%", justifyContent: "center", marginTop: 14 }}>
-          Entrar
+        <button onClick={onConfirm} disabled={pending} style={{ ...S.btnPrimary, width: "100%", justifyContent: "center", marginTop: 14, opacity: pending ? 0.7 : 1 }}>
+          {pending ? <><Loader2 size={15} className="animate-spin" /> Entrando…</> : "Entrar"}
         </button>
       </div>
     </div>
@@ -767,7 +847,7 @@ function climaValor(v, unidade = "", casas = 0) {
     : `${n.toLocaleString("pt-BR", { maximumFractionDigits: casas })}${unidade}`;
 }
 
-function ClimaNatalTab() {
+function ClimaNatalTab({ compact = false, onViewTides }) {
   const [tempo, setTempo] = useState(null);
   const [mar, setMar] = useState(null);
   const [carregando, setCarregando] = useState(true);
@@ -851,6 +931,32 @@ function ClimaNatalTab() {
     return ["N","NE","L","SE","S","SO","O","NO"][Math.round(Number(graus) / 45) % 8];
   };
 
+  if (compact) {
+    return (
+      <section className="home-weather">
+        <div className="home-weather-main">
+          <div>
+            <div className="home-eyebrow">MAR & TEMPO · NATAL/RN</div>
+            <div className="home-weather-title">
+              {current ? climaValor(current.temperature_2m, "°C") : carregando ? "Consultando…" : "Dados indisponíveis"}
+            </div>
+            <div className="home-weather-sub">
+              {current ? `Vento ${climaValor(current.wind_speed_10m, " km/h")} · Ondas ${climaValor(ondas?.wave_height, " m", 1)}` : erro || "Previsão de referência para Natal"}
+            </div>
+          </div>
+          <CloudSun size={34} />
+        </div>
+        <div className="home-weather-footer">
+          <span>{atualizado ? `Atualizado às ${atualizado.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "Previsão Open-Meteo"}</span>
+          <button type="button" onClick={onViewTides} className="home-weather-tide-link">Tábua integrada <Waves size={12} /></button>
+          <button onClick={carregar} disabled={carregando} aria-label="Atualizar condições do mar"><RefreshCw size={13} className={carregando ? "animate-spin" : ""} /></button>
+        </div>
+        <div className="home-weather-note">Previsão de modelo, não substitui a observação local nem os avisos oficiais da Marinha.</div>
+        <TideTable compact />
+      </section>
+    );
+  }
+
   return (
     <div style={{ paddingTop: 20, display: "grid", gap: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -922,15 +1028,7 @@ function ClimaNatalTab() {
         </div>
       </>}
 
-      <div style={{ ...card, borderLeft: "4px solid #D1A52B" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#123D27", fontWeight: 800, marginBottom: 7 }}><Waves size={18} /> Tábua de marés — Porto de Natal</div>
-        <p style={{ color: "#65756B", fontSize: 12.5, lineHeight: 1.6, margin: "0 0 10px" }}>
-          A tábua de marés deve ser consultada na fonte oficial da Marinha do Brasil. O painel não estima horários ou alturas de maré: usa o Porto de Natal como referência regional.
-        </p>
-        <a href="https://www.marinha.mil.br/chm/dados-do-segnav/dados-de-mare-mapa" target="_blank" rel="noreferrer" style={{ color: "#0B5E22", fontWeight: 800, fontSize: 13, display: "inline-flex", alignItems: "center", gap: 6 }}>
-          Consultar marés oficiais da Marinha <ExternalLink size={13} />
-        </a>
-      </div>
+      <TideTable />
 
       <div style={{ ...card, background: "#FFF9E9" }}>
         <div style={{ color: "#765B16", fontWeight: 800, fontSize: 12, marginBottom: 5 }}>SEGURANÇA E LIMITAÇÕES</div>
@@ -950,17 +1048,18 @@ function ClimaNatalTab() {
 
 function Tabs({ tab, setTab, isAdmin }) {
   const items = [
-    { id: "classificacao", label: "Classificação", icon: Trophy },
-    { id: "clima", label: "Mar & Clima", icon: CloudSun },
+    { id: "inicio", label: "Início", icon: Fish },
+    { id: "classificacao", label: "Geral", icon: Trophy },
+    { id: "clima", label: "Mar & tempo", icon: Waves },
     { id: "evolucao", label: "Evolução", icon: TrendingUp },
     { id: "premios", label: "Prêmios", icon: Award },
-    { id: "etapa", label: "Lançar Etapa", icon: Scale, restrito: true },
+    { id: "etapa", label: "Etapas", icon: Scale, restrito: true },
     { id: "pescadores", label: "Pescadores", icon: Users, restrito: true },
     { id: "historico", label: "Histórico", icon: Calendar, restrito: true },
   ];
   return (
     <div style={S.tabsWrap}>
-      <div style={{ maxWidth: 1040, margin: "0 auto", display: "flex", gap: 4, padding: "0 12px", overflowX: "auto" }}>
+      <div style={{ maxWidth: 1040, margin: "0 auto", display: "flex", gap: 5, padding: "0 12px", overflowX: "auto" }}>
         {items.map((it) => {
           const active = tab === it.id;
           const Icon = it.icon;
@@ -1265,6 +1364,59 @@ function PosicaoBadge({ pos }) {
   return <div style={{ ...S.posBadge, background: "#E7E2D4", color: S.colors.deep }}>{pos}º</div>;
 }
 
+/* ================= INÍCIO / DASHBOARD ================= */
+
+function InicioTab({ catAtual, setCatAtual, linhas, totalKgGeral, proximaEtapa, etapasInfo, etapas, pescadores, rankingEtapa, onVerGeral, onVerMar }) {
+  const top3 = linhas.slice(0, 3);
+  return (
+    <div className="home-dashboard">
+      <section className="home-welcome">
+        <div>
+          <div className="home-eyebrow">ASSOCIAÇÃO DE PESCA ESPORTIVA POTIGUAR</div>
+          <h1>Campeonato APEP <span>2026</span></h1>
+          <p>Acompanhe a classificação, os resultados e as novidades do campeonato.</p>
+        </div>
+        <div className="home-welcome-mark"><Fish size={34} /></div>
+      </section>
+
+      <div className="home-section-heading">
+        <div><span className="home-eyebrow">CAMPEONATO</span><h2>Classificação em destaque</h2></div>
+        <button className="home-text-button" onClick={onVerGeral}>Ver classificação completa <ChevronRight size={15} /></button>
+      </div>
+
+      <section className="home-ranking-card">
+        <div className="home-ranking-top">
+          <CatSwitch cat={catAtual} setCat={setCatAtual} />
+          <span>{linhas.length} competidores</span>
+        </div>
+        {top3.length ? (
+          <Podio linhas={top3} cat={catAtual} titulo={`Pódio geral · ${CATS[catAtual].label}`} />
+        ) : (
+          <div className="home-empty">Ainda não há resultados lançados para esta categoria.</div>
+        )}
+        <div className="home-ranking-footer">
+          <div><span>Total pescado</span><strong>{fmt(totalKgGeral)} kg</strong></div>
+          <button onClick={onVerGeral}>Abrir Geral <ChevronRight size={15} /></button>
+        </div>
+      </section>
+
+      {proximaEtapa && (
+        <section className="home-next-stage">
+          <div className="home-next-icon"><Calendar size={19} /></div>
+          <div><span className="home-eyebrow">PRÓXIMO ENCONTRO</span><strong>Etapa {proximaEtapa.n} · {proximaEtapa.local || "Local a definir"}</strong><small>{proximaEtapa.data ? fmtData(proximaEtapa.data) : "Data a definir"}</small></div>
+        </section>
+      )}
+
+      <DestaquesEtapas etapasInfo={etapasInfo} etapas={etapas} pescadores={pescadores} rankingEtapa={rankingEtapa} />
+      <div className="home-section-heading home-weather-heading">
+        <div><span className="home-eyebrow">CONDIÇÕES DA COSTA</span><h2>Mar e tempo</h2></div>
+        <button className="home-text-button" onClick={onVerMar}>Ver detalhes <ChevronRight size={15} /></button>
+      </div>
+      <ClimaNatalTab compact onViewTides={onVerMar} />
+    </div>
+  );
+}
+
 /* ================= CLASSIFICAÇÃO GERAL ================= */
 
 function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral, proximaEtapa, etapasInfo, rankingEtapa, etapas, pescadores }) {
@@ -1336,8 +1488,6 @@ function ClassificacaoTab({ catAtual, setCatAtual, linhas, totalKgGeral, proxima
           <CatSwitch cat={catAtual} setCat={setCatAtual} />
         </div>
       </div>
-
-      <DestaquesEtapas etapasInfo={etapasInfo} etapas={etapas} pescadores={pescadores} rankingEtapa={rankingEtapa} />
 
       {linhas.length > 0 && <Podio linhas={linhas.slice(0, 3)} cat={catAtual} titulo="Pódio geral" />}
 
@@ -1417,24 +1567,51 @@ function DestaquesEtapas({ etapasInfo, etapas, pescadores, rankingEtapa }) {
     const info = etapasInfo?.[n] || {};
     const lancamentos = Object.values(etapas?.[n] || {}).filter((e) => e && (e.peso !== "" || e.quantidade !== "" || e.raia !== ""));
     if (!lancamentos.length && !info.local && !info.data) continue;
-    const rankings = [...rankingEtapa(n, "M"), ...rankingEtapa(n, "F")].sort((a,b) => b.peso-a.peso);
+    const rankings = [...rankingEtapa(n, "M"), ...rankingEtapa(n, "F")].sort((a, b) => b.peso - a.peso);
     const campeao = rankings[0];
-    const pesoTotal = lancamentos.reduce((s,e) => s + (parseFloat(e.peso) || 0) + (parseFloat(e.peixesExoticos) || 0) * 0.5, 0);
-    const peixes = lancamentos.reduce((s,e) => s + (parseInt(e.quantidade,10) || 0), 0);
+    const pesoTotal = lancamentos.reduce((s, e) => s + (parseFloat(e.peso) || 0) + (parseFloat(e.peixesExoticos) || 0) * 0.5, 0);
+    const peixes = lancamentos.reduce((s, e) => s + (parseInt(e.quantidade, 10) || 0), 0);
     cards.push({ n, info, lancamentos: lancamentos.length, pesoTotal, peixes, campeao });
   }
-  if (!cards.length) return null;
-  return <div style={{ ...S.card, marginTop: 14 }}>
-    <SectionTitle icon={Waves} title="Destaques das etapas" subtitle="Notícias automáticas criadas com os resultados lançados no campeonato." />
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
-      {cards.slice().reverse().map((c) => <article key={c.n} style={{ border: "1px solid #E8E4D8", borderRadius: 12, padding: 14, background: "#FFFEFA" }}>
-        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: 1, color: "#0B7A36", textTransform: "uppercase" }}>Notícia • Etapa {c.n}</div>
-        <div style={{ fontFamily: S.fonts.display, fontSize: 16, fontWeight: 700, color: S.colors.deep, margin: "5px 0" }}>{c.info.local || `Etapa ${c.n}`} {c.info.data ? ` — ${fmtData(c.info.data)}` : ""}</div>
-        <p style={{ fontFamily: S.fonts.body, fontSize: 12.5, lineHeight: 1.5, color: "#536469", margin: "7px 0" }}>{c.campeao ? `${c.campeao.pescador.nome} liderou os resultados com ${fmt(c.campeao.peso)} kg e ${fmtPts(c.campeao.pontos)} pontos.` : `Os dados da etapa ${c.n} já começaram a ser registrados.`}</p>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}><span style={{ background: "#F0F4EA", color: "#43614A", borderRadius: 20, padding: "4px 8px", fontSize: 10, fontWeight: 700 }}>{c.lancamentos} pescadores</span><span style={{ background: "#F0F4EA", color: "#43614A", borderRadius: 20, padding: "4px 8px", fontSize: 10, fontWeight: 700 }}>{fmt(c.pesoTotal)} kg</span><span style={{ background: "#F0F4EA", color: "#43614A", borderRadius: 20, padding: "4px 8px", fontSize: 10, fontWeight: 700 }}>{c.peixes} peixes</span></div>
-      </article>)}
-    </div>
-  </div>;
+  const ordered = cards.slice().reverse();
+  const [activeIndex, setActiveIndex] = useState(0);
+  useEffect(() => {
+    if (ordered.length < 2) return;
+    const timer = setInterval(() => setActiveIndex((i) => (i + 1) % ordered.length), 7000);
+    return () => clearInterval(timer);
+  }, [ordered.length]);
+  useEffect(() => { setActiveIndex(0); }, [ordered.length]);
+  if (!ordered.length) return null;
+  const c = ordered[activeIndex % ordered.length];
+  return (
+    <section className="home-highlights">
+      <div className="home-section-heading">
+        <div><span className="home-eyebrow">ACONTECEU NA APEP</span><h2>Destaque das etapas</h2></div>
+        <span className="home-highlight-count">{activeIndex + 1}/{ordered.length}</span>
+      </div>
+      <article className="home-highlight-card" key={c.n}>
+        <div className="home-highlight-art"><Waves size={32} /><span>ETAPA {c.n}</span></div>
+        <div className="home-highlight-content">
+          <div className="home-eyebrow">RESULTADO EM DESTAQUE</div>
+          <h3>{c.info.local || `Etapa ${c.n}`}</h3>
+          <p>{c.info.data ? fmtData(c.info.data) : "Data não informada"}</p>
+          <div className="home-highlight-story">
+            {c.campeao ? <><strong>{c.campeao.pescador.nome}</strong> liderou a etapa com <strong>{fmt(c.campeao.peso)} kg</strong> e {fmtPts(c.campeao.pontos)} pontos.</> : "Os resultados desta etapa começaram a ser registrados."}
+          </div>
+          <div className="home-highlight-stats">
+            <span>{c.lancamentos} pescadores</span><span>{fmt(c.pesoTotal)} kg</span><span>{c.peixes} peixes</span>
+          </div>
+        </div>
+      </article>
+      {ordered.length > 1 && (
+        <div className="home-highlight-controls">
+          <button onClick={() => setActiveIndex((i) => (i - 1 + ordered.length) % ordered.length)} aria-label="Destaque anterior">‹</button>
+          <div>{ordered.map((item, i) => <button key={item.n} className={i === activeIndex ? "active" : ""} onClick={() => setActiveIndex(i)} aria-label={`Ver etapa ${item.n}`} />)}</div>
+          <button onClick={() => setActiveIndex((i) => (i + 1) % ordered.length)} aria-label="Próximo destaque">›</button>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function HistoricoTab({ logs, onRefresh }) {
@@ -2019,6 +2196,126 @@ const S = {
 };
 
 const CSS = `
+.home-dashboard { display: grid; gap: 18px; padding-top: 18px; }
+.home-welcome { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:24px; border-radius:20px; color:#fff; background:linear-gradient(120deg,#103f2b 0%,#176b3b 65%,#1d7650 100%); box-shadow:0 12px 28px rgba(14,65,40,.12); }
+.home-welcome h1 { margin:7px 0 5px; font-size:clamp(25px,4vw,34px); line-height:1.08; letter-spacing:-.7px; font-family:'Fraunces',serif; }
+.home-welcome h1 span { color:#e8c65b; }
+.home-welcome p { margin:0; color:rgba(255,255,255,.78); font-size:13px; line-height:1.5; }
+.home-welcome-mark { width:62px; height:62px; flex-shrink:0; border:1px solid rgba(255,255,255,.2); background:rgba(255,255,255,.1); border-radius:18px; display:grid; place-items:center; color:#f1d47a; }
+.home-eyebrow { display:block; color:#6f8978; font-size:10px; font-weight:800; letter-spacing:1.1px; text-transform:uppercase; }
+.home-welcome .home-eyebrow { color:rgba(255,255,255,.66); }
+.home-section-heading { display:flex; align-items:end; justify-content:space-between; gap:12px; }
+.home-section-heading h2 { margin:4px 0 0; color:#153e2b; font-family:'Fraunces',serif; font-size:20px; }
+.home-text-button,.home-ranking-footer button { display:inline-flex; align-items:center; gap:4px; border:0; background:transparent; color:#17663b; font-size:12px; font-weight:800; cursor:pointer; white-space:nowrap; }
+.home-ranking-card { padding:15px; background:#fff; border:1px solid #e5ecdf; border-radius:18px; box-shadow:0 5px 18px rgba(20,50,30,.04); }
+.home-ranking-top { display:flex; align-items:center; justify-content:space-between; gap:10px; color:#819084; font-size:11px; }
+.home-ranking-card > div:nth-child(2) { margin-top:8px; }
+.home-ranking-card > div:nth-child(2) > div { box-shadow:none; border:0; padding:12px 0 0; }
+.home-ranking-footer { display:flex; align-items:center; justify-content:space-between; gap:10px; border-top:1px solid #edf1e9; padding-top:12px; margin-top:12px; }
+.home-ranking-footer div { display:flex; flex-direction:column; gap:2px; }
+.home-ranking-footer span { color:#849087; font-size:10px; }
+.home-ranking-footer strong { color:#153e2b; font-size:17px; }
+.home-empty { padding:28px 12px; color:#77847c; text-align:center; font-size:13px; }
+.home-next-stage { display:flex; align-items:center; gap:12px; padding:14px 16px; border-radius:15px; background:#f4f8f0; border:1px solid #e0eadb; }
+.home-next-icon { width:40px; height:40px; border-radius:12px; background:#e5efdf; color:#22643e; display:grid; place-items:center; flex-shrink:0; }
+.home-next-stage strong,.home-next-stage small { display:block; margin-top:3px; color:#1d4a31; font-size:13px; }
+.home-next-stage small { color:#849087; font-size:11px; }
+.home-highlights { display:grid; gap:10px; }
+.home-highlight-count { color:#819084; font-size:11px; font-weight:700; }
+.home-highlight-card { display:grid; grid-template-columns:150px minmax(0,1fr); overflow:hidden; background:#fff; border:1px solid #e5ecdf; border-radius:17px; box-shadow:0 5px 18px rgba(20,50,30,.04); }
+.home-highlight-art { min-height:172px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; color:#e8d18b; background:linear-gradient(145deg,#164d35,#23744b); }
+.home-highlight-art span { font-size:10px; font-weight:800; letter-spacing:1.2px; color:rgba(255,255,255,.8); }
+.home-highlight-content { padding:16px 18px; min-width:0; }
+.home-highlight-content h3 { margin:5px 0 2px; color:#153e2b; font:700 19px 'Fraunces',serif; }
+.home-highlight-content p { margin:0; color:#849087; font-size:11px; }
+.home-highlight-story { margin-top:12px; color:#52675a; font-size:13px; line-height:1.55; }
+.home-highlight-story strong { color:#174d32; }
+.home-highlight-stats { display:flex; flex-wrap:wrap; gap:7px; margin-top:12px; }
+.home-highlight-stats span { border-radius:30px; padding:5px 9px; background:#f1f6ee; color:#55705d; font-size:10px; font-weight:700; }
+.home-highlight-controls { display:flex; align-items:center; justify-content:center; gap:12px; }
+.home-highlight-controls > button { width:27px; height:27px; border:1px solid #dfe8da; border-radius:50%; background:#fff; color:#286340; font-size:20px; line-height:1; cursor:pointer; }
+.home-highlight-controls div { display:flex; gap:5px; }
+.home-highlight-controls div button { width:7px; height:7px; padding:0; border:0; border-radius:50%; background:#cad6c8; cursor:pointer; }
+.home-highlight-controls div button.active { width:20px; border-radius:9px; background:#23744b; }
+.home-weather { padding:15px 17px; border:1px solid #e2ebdf; border-radius:16px; background:linear-gradient(120deg,#f4f8f0,#fff); color:#17452e; }
+.home-weather-main { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.home-weather-main > svg { color:#2c7950; flex-shrink:0; }
+.home-weather-title { margin-top:4px; font-size:25px; font-weight:800; }
+.home-weather-sub { margin-top:3px; color:#62776a; font-size:12px; }
+.home-weather-footer { display:flex; align-items:center; gap:13px; flex-wrap:wrap; margin-top:12px; padding-top:10px; border-top:1px solid #e4ebdf; color:#849087; font-size:10px; }
+.home-weather-footer a { display:inline-flex; align-items:center; gap:4px; color:#21643d; font-weight:800; text-decoration:none; }
+.home-weather-footer .home-weather-tide-link { display:inline-flex; align-items:center; gap:4px; margin-left:0; padding:0; border:0; background:transparent; color:#21643d; font:inherit; font-size:10px; font-weight:800; cursor:pointer; }
+.home-weather-footer button { margin-left:auto; display:grid; place-items:center; width:27px; height:27px; border:1px solid #dbe7d7; border-radius:8px; background:#fff; color:#21643d; cursor:pointer; }
+.home-weather-note { margin-top:7px; color:#8a958d; font-size:9.5px; line-height:1.45; }
+.home-tide-card { margin-top:12px; padding:13px; border-radius:12px; background:#fff; border:1px solid #dfead9; color:#17452e; }
+.home-tide-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; color:#28734a; }
+.home-tide-heading strong { display:block; margin-top:3px; color:#153e2b; font-size:13px; }
+.home-tide-next { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:6px; margin-top:11px; padding:9px 10px; border-radius:9px; background:#f1f7ef; }
+.home-tide-next span { color:#718078; font-size:10px; text-transform:capitalize; }
+.home-tide-next strong { color:#175e38; font-size:12px; }
+.home-tide-events { display:flex; flex-wrap:wrap; gap:5px 12px; margin-top:9px; color:#596e60; font-size:10px; }
+.home-tide-empty { margin-top:9px; color:#77847c; font-size:11px; }
+.home-tide-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px; padding-top:8px; border-top:1px solid #edf1e9; color:#829087; font-size:9px; }
+.home-tide-footer button { display:grid; place-items:center; width:25px; height:25px; border:1px solid #dbe7d7; border-radius:8px; background:#fff; color:#21643d; cursor:pointer; }
+.tide-table-card { min-width:0; padding:20px; border:1px solid #e2ebdf; border-radius:16px; background:#fff; box-shadow:0 4px 16px rgba(20,50,30,.045); color:#17452e; }
+.tide-table-header,.tide-table-title,.tide-date-row { display:flex; align-items:center; }
+.tide-table-header { justify-content:space-between; gap:12px; }
+.tide-table-title { min-width:0; gap:10px; }
+.tide-icon { display:grid; place-items:center; width:38px; height:38px; flex-shrink:0; border-radius:11px; background:#eaf4e7; color:#237449; }
+.tide-table-title h2 { margin:3px 0 0; color:#153e2b; font:700 21px 'Fraunces',serif; }
+.tide-refresh,.tide-date-arrow { display:inline-flex; align-items:center; justify-content:center; gap:7px; border:1px solid #dbe7d7; border-radius:9px; background:#f6f9f4; color:#21643d; font-size:11px; font-weight:800; cursor:pointer; }
+.tide-refresh { min-height:34px; padding:0 11px; }
+.tide-date-row { justify-content:center; gap:11px; margin:17px auto 13px; }
+.tide-date-arrow { width:31px; height:31px; padding:0; }
+.tide-date-arrow:disabled,.tide-refresh:disabled { opacity:.48; cursor:not-allowed; }
+.tide-date-picker { position:relative; display:flex; align-items:center; gap:7px; max-width:100%; padding:8px 11px; border:1px solid #e2eadf; border-radius:9px; background:#f7faf5; color:#285c3d; font-size:12px; font-weight:700; text-transform:capitalize; }
+.tide-date-picker input { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; }
+.tide-status { display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin:12px 0; color:#285b3c; font-size:11px; font-weight:700; }
+.tide-status-dot { width:8px; height:8px; border-radius:50%; background:#28a45d; box-shadow:0 0 0 3px #e6f4e9; }
+.tide-status-dot.is-ebb { background:#4387bb; box-shadow:0 0 0 3px #e8f1f8; }
+.tide-status-separator { color:#b1bcb2; }
+.tide-chart-wrap { padding:12px 12px 4px; border:1px solid #edf1e9; border-radius:12px; background:linear-gradient(180deg,#fcfdfb,#fff); }
+.tide-chart-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#1c4e31; font-size:11px; }
+.tide-chart-heading span { color:#8a968c; font-size:9px; }
+.tide-chart { width:100%; height:205px; margin-top:10px; }
+.tide-chart-tooltip { display:grid; gap:4px; padding:8px 10px; border:1px solid #e1eadf; border-radius:8px; background:#fff; box-shadow:0 4px 14px rgba(20,50,30,.1); color:#315b3f; font-size:11px; }
+.tide-chart-tooltip span { color:#17663b; font-weight:800; }
+.tide-events-heading { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:16px 0 8px; color:#1b4b30; font-size:12px; }
+.tide-events-heading span { color:#89958b; font-size:10px; }
+.tide-events-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(175px,1fr)); gap:7px; }
+.tide-event { display:flex; align-items:center; gap:9px; min-width:0; padding:10px; border:1px solid #edf1e9; border-radius:10px; background:#fbfcfa; }
+.tide-event-icon { display:grid; place-items:center; width:27px; height:27px; flex-shrink:0; border-radius:50%; font-size:16px; font-weight:800; }
+.tide-event-icon.alta { background:#e6f4e9; color:#18844c; }
+.tide-event-icon.baixa { background:#eaf2f8; color:#397da9; }
+.tide-event-main { display:grid; gap:2px; min-width:0; flex:1; }
+.tide-event-main strong { color:#365c42; font-size:10px; text-transform:capitalize; }
+.tide-event-main span { color:#839087; font-size:11px; }
+.tide-event-height { color:#1d5e38; font-size:12px; white-space:nowrap; }
+.tide-event-height small { color:#78867b; font-size:9px; }
+.tide-message { display:flex; align-items:center; gap:8px; margin:10px 0; padding:10px 11px; border-radius:9px; color:#586f5e; background:#f4f8f1; font-size:11px; line-height:1.45; }
+.tide-message-warning { color:#765b16; background:#fff8e8; }
+.tide-message-error { color:#8b402e; background:#fff4ef; }
+.tide-attribution { display:grid; gap:5px; margin-top:14px; padding-top:11px; border-top:1px solid #edf1e9; color:#77847b; font-size:9px; line-height:1.5; }
+.tide-attribution a { width:max-content; color:#21643d; font-weight:800; text-decoration:underline; text-underline-offset:2px; }
+.tide-attribution small { color:#8b8270; font-size:9px; }
+@media (max-width:560px) {
+ .home-welcome { padding:19px; border-radius:16px; }
+ .home-welcome-mark { width:48px; height:48px; border-radius:14px; }
+ .home-section-heading h2 { font-size:18px; }
+ .home-text-button { font-size:10px; }
+ .home-highlight-card { grid-template-columns:1fr; }
+ .home-highlight-art { min-height:76px; flex-direction:row; }
+ .home-highlight-content { padding:14px; }
+ .home-ranking-card { padding:12px; }
+ .tide-table-card { padding:14px 12px; border-radius:13px; }
+ .tide-table-title h2 { font-size:18px; }
+ .tide-refresh { padding:0 8px; font-size:10px; }
+ .tide-chart { height:185px; }
+ .tide-events-grid { grid-template-columns:1fr 1fr; }
+ .tide-event { gap:6px; padding:8px 7px; }
+ .tide-event-icon { width:23px; height:23px; }
+ .tide-event-height { font-size:10px; }
+}
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700;800&display=swap');
 .animate-spin { animation: spin 1s linear infinite; }
 @keyframes spin { from { transform: rotate(0deg);} to { transform: rotate(360deg);} }

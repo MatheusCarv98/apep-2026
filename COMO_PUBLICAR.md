@@ -49,9 +49,9 @@ cp .env.example .env
 npm run dev
 ```
 
-## Lembrete sobre a senha da diretoria
+## Acesso da diretoria
 
-O app continua protegido pela senha `APEP2026` (a mesma que já existia) para
-quem for cadastrar pescadores ou lançar as etapas — isso não muda com a
-publicação. Se quiser trocar essa senha, procure por `ADMIN_PIN` dentro do
-arquivo `src/App.jsx`.
+O app usa contas individuais do Supabase Auth, autorizadas pela tabela
+`apep_diretores`; não existe senha administrativa fixa no código. Antes de
+publicar a versão com esse acesso, siga o guia [ACESSO_DIRETORIA.md](./ACESSO_DIRETORIA.md)
+e cadastre as contas dos diretores no Supabase.
