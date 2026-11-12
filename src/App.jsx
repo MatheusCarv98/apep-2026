@@ -10,6 +10,7 @@ import {
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import { supabase } from "./supabaseClient";
+import TideTable from "./TideTable.jsx";
 
 /* ---------------------------------------------------------------
    TABELA COSAPYL — pontuação por posição (1ª a 30ª colocação)
@@ -578,7 +579,7 @@ export default function ApepApp() {
           />
         )}
 
-        {tab === "clima" && <ClimaNatalTab />}
+        {tab === "clima" && <ClimaNatalTab onViewTides={() => setTab("clima")} />}
 
         {tab === "classificacao" && (
           <ClassificacaoTab catAtual={catAtual} setCatAtual={setCatAtual} linhas={classificacaoGeral[catAtual] || []} totalKgGeral={totalKgGeral} proximaEtapa={proximaEtapa} etapasInfo={etapasInfo} rankingEtapa={rankingEtapa} etapas={etapas} pescadores={pescadores} />
@@ -783,7 +784,7 @@ function climaValor(v, unidade = "", casas = 0) {
     : `${n.toLocaleString("pt-BR", { maximumFractionDigits: casas })}${unidade}`;
 }
 
-function ClimaNatalTab({ compact = false }) {
+function ClimaNatalTab({ compact = false, onViewTides }) {
   const [tempo, setTempo] = useState(null);
   const [mar, setMar] = useState(null);
   const [carregando, setCarregando] = useState(true);
@@ -884,10 +885,11 @@ function ClimaNatalTab({ compact = false }) {
         </div>
         <div className="home-weather-footer">
           <span>{atualizado ? `Atualizado às ${atualizado.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "Previsão Open-Meteo"}</span>
-          <a href="https://www.marinha.mil.br/chm/dados-do-segnav/dados-de-mare-mapa" target="_blank" rel="noreferrer">Tábua de marés <ExternalLink size={12} /></a>
+          <button type="button" onClick={onViewTides} className="home-weather-tide-link">Tábua integrada <Waves size={12} /></button>
           <button onClick={carregar} disabled={carregando} aria-label="Atualizar condições do mar"><RefreshCw size={13} className={carregando ? "animate-spin" : ""} /></button>
         </div>
         <div className="home-weather-note">Previsão de modelo, não substitui a observação local nem os avisos oficiais da Marinha.</div>
+        <TideTable compact />
       </section>
     );
   }
@@ -963,15 +965,7 @@ function ClimaNatalTab({ compact = false }) {
         </div>
       </>}
 
-      <div style={{ ...card, borderLeft: "4px solid #D1A52B" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#123D27", fontWeight: 800, marginBottom: 7 }}><Waves size={18} /> Tábua de marés — Porto de Natal</div>
-        <p style={{ color: "#65756B", fontSize: 12.5, lineHeight: 1.6, margin: "0 0 10px" }}>
-          A tábua de marés deve ser consultada na fonte oficial da Marinha do Brasil. O painel não estima horários ou alturas de maré: usa o Porto de Natal como referência regional.
-        </p>
-        <a href="https://www.marinha.mil.br/chm/dados-do-segnav/dados-de-mare-mapa" target="_blank" rel="noreferrer" style={{ color: "#0B5E22", fontWeight: 800, fontSize: 13, display: "inline-flex", alignItems: "center", gap: 6 }}>
-          Consultar marés oficiais da Marinha <ExternalLink size={13} />
-        </a>
-      </div>
+      <TideTable />
 
       <div style={{ ...card, background: "#FFF9E9" }}>
         <div style={{ color: "#765B16", fontWeight: 800, fontSize: 12, marginBottom: 5 }}>SEGURANÇA E LIMITAÇÕES</div>
@@ -1355,7 +1349,7 @@ function InicioTab({ catAtual, setCatAtual, linhas, totalKgGeral, proximaEtapa, 
         <div><span className="home-eyebrow">CONDIÇÕES DA COSTA</span><h2>Mar e tempo</h2></div>
         <button className="home-text-button" onClick={onVerMar}>Ver detalhes <ChevronRight size={15} /></button>
       </div>
-      <ClimaNatalTab compact />
+      <ClimaNatalTab compact onViewTides={onVerMar} />
     </div>
   );
 }
@@ -2187,8 +2181,60 @@ const CSS = `
 .home-weather-sub { margin-top:3px; color:#62776a; font-size:12px; }
 .home-weather-footer { display:flex; align-items:center; gap:13px; flex-wrap:wrap; margin-top:12px; padding-top:10px; border-top:1px solid #e4ebdf; color:#849087; font-size:10px; }
 .home-weather-footer a { display:inline-flex; align-items:center; gap:4px; color:#21643d; font-weight:800; text-decoration:none; }
+.home-weather-footer .home-weather-tide-link { display:inline-flex; align-items:center; gap:4px; margin-left:0; padding:0; border:0; background:transparent; color:#21643d; font:inherit; font-size:10px; font-weight:800; cursor:pointer; }
 .home-weather-footer button { margin-left:auto; display:grid; place-items:center; width:27px; height:27px; border:1px solid #dbe7d7; border-radius:8px; background:#fff; color:#21643d; cursor:pointer; }
 .home-weather-note { margin-top:7px; color:#8a958d; font-size:9.5px; line-height:1.45; }
+.home-tide-card { margin-top:12px; padding:13px; border-radius:12px; background:#fff; border:1px solid #dfead9; color:#17452e; }
+.home-tide-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; color:#28734a; }
+.home-tide-heading strong { display:block; margin-top:3px; color:#153e2b; font-size:13px; }
+.home-tide-next { display:flex; flex-wrap:wrap; justify-content:space-between; align-items:center; gap:6px; margin-top:11px; padding:9px 10px; border-radius:9px; background:#f1f7ef; }
+.home-tide-next span { color:#718078; font-size:10px; text-transform:capitalize; }
+.home-tide-next strong { color:#175e38; font-size:12px; }
+.home-tide-events { display:flex; flex-wrap:wrap; gap:5px 12px; margin-top:9px; color:#596e60; font-size:10px; }
+.home-tide-empty { margin-top:9px; color:#77847c; font-size:11px; }
+.home-tide-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:10px; padding-top:8px; border-top:1px solid #edf1e9; color:#829087; font-size:9px; }
+.home-tide-footer button { display:grid; place-items:center; width:25px; height:25px; border:1px solid #dbe7d7; border-radius:8px; background:#fff; color:#21643d; cursor:pointer; }
+.tide-table-card { min-width:0; padding:20px; border:1px solid #e2ebdf; border-radius:16px; background:#fff; box-shadow:0 4px 16px rgba(20,50,30,.045); color:#17452e; }
+.tide-table-header,.tide-table-title,.tide-date-row { display:flex; align-items:center; }
+.tide-table-header { justify-content:space-between; gap:12px; }
+.tide-table-title { min-width:0; gap:10px; }
+.tide-icon { display:grid; place-items:center; width:38px; height:38px; flex-shrink:0; border-radius:11px; background:#eaf4e7; color:#237449; }
+.tide-table-title h2 { margin:3px 0 0; color:#153e2b; font:700 21px 'Fraunces',serif; }
+.tide-refresh,.tide-date-arrow { display:inline-flex; align-items:center; justify-content:center; gap:7px; border:1px solid #dbe7d7; border-radius:9px; background:#f6f9f4; color:#21643d; font-size:11px; font-weight:800; cursor:pointer; }
+.tide-refresh { min-height:34px; padding:0 11px; }
+.tide-date-row { justify-content:center; gap:11px; margin:17px auto 13px; }
+.tide-date-arrow { width:31px; height:31px; padding:0; }
+.tide-date-arrow:disabled,.tide-refresh:disabled { opacity:.48; cursor:not-allowed; }
+.tide-date-picker { position:relative; display:flex; align-items:center; gap:7px; max-width:100%; padding:8px 11px; border:1px solid #e2eadf; border-radius:9px; background:#f7faf5; color:#285c3d; font-size:12px; font-weight:700; text-transform:capitalize; }
+.tide-date-picker input { position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; }
+.tide-status { display:flex; flex-wrap:wrap; align-items:center; gap:7px; margin:12px 0; color:#285b3c; font-size:11px; font-weight:700; }
+.tide-status-dot { width:8px; height:8px; border-radius:50%; background:#28a45d; box-shadow:0 0 0 3px #e6f4e9; }
+.tide-status-dot.is-ebb { background:#4387bb; box-shadow:0 0 0 3px #e8f1f8; }
+.tide-status-separator { color:#b1bcb2; }
+.tide-chart-wrap { padding:12px 12px 4px; border:1px solid #edf1e9; border-radius:12px; background:linear-gradient(180deg,#fcfdfb,#fff); }
+.tide-chart-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; color:#1c4e31; font-size:11px; }
+.tide-chart-heading span { color:#8a968c; font-size:9px; }
+.tide-chart { width:100%; height:205px; margin-top:10px; }
+.tide-chart-tooltip { display:grid; gap:4px; padding:8px 10px; border:1px solid #e1eadf; border-radius:8px; background:#fff; box-shadow:0 4px 14px rgba(20,50,30,.1); color:#315b3f; font-size:11px; }
+.tide-chart-tooltip span { color:#17663b; font-weight:800; }
+.tide-events-heading { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:16px 0 8px; color:#1b4b30; font-size:12px; }
+.tide-events-heading span { color:#89958b; font-size:10px; }
+.tide-events-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(175px,1fr)); gap:7px; }
+.tide-event { display:flex; align-items:center; gap:9px; min-width:0; padding:10px; border:1px solid #edf1e9; border-radius:10px; background:#fbfcfa; }
+.tide-event-icon { display:grid; place-items:center; width:27px; height:27px; flex-shrink:0; border-radius:50%; font-size:16px; font-weight:800; }
+.tide-event-icon.alta { background:#e6f4e9; color:#18844c; }
+.tide-event-icon.baixa { background:#eaf2f8; color:#397da9; }
+.tide-event-main { display:grid; gap:2px; min-width:0; flex:1; }
+.tide-event-main strong { color:#365c42; font-size:10px; text-transform:capitalize; }
+.tide-event-main span { color:#839087; font-size:11px; }
+.tide-event-height { color:#1d5e38; font-size:12px; white-space:nowrap; }
+.tide-event-height small { color:#78867b; font-size:9px; }
+.tide-message { display:flex; align-items:center; gap:8px; margin:10px 0; padding:10px 11px; border-radius:9px; color:#586f5e; background:#f4f8f1; font-size:11px; line-height:1.45; }
+.tide-message-warning { color:#765b16; background:#fff8e8; }
+.tide-message-error { color:#8b402e; background:#fff4ef; }
+.tide-attribution { display:grid; gap:5px; margin-top:14px; padding-top:11px; border-top:1px solid #edf1e9; color:#77847b; font-size:9px; line-height:1.5; }
+.tide-attribution a { width:max-content; color:#21643d; font-weight:800; text-decoration:underline; text-underline-offset:2px; }
+.tide-attribution small { color:#8b8270; font-size:9px; }
 @media (max-width:560px) {
  .home-welcome { padding:19px; border-radius:16px; }
  .home-welcome-mark { width:48px; height:48px; border-radius:14px; }
@@ -2198,6 +2244,14 @@ const CSS = `
  .home-highlight-art { min-height:76px; flex-direction:row; }
  .home-highlight-content { padding:14px; }
  .home-ranking-card { padding:12px; }
+ .tide-table-card { padding:14px 12px; border-radius:13px; }
+ .tide-table-title h2 { font-size:18px; }
+ .tide-refresh { padding:0 8px; font-size:10px; }
+ .tide-chart { height:185px; }
+ .tide-events-grid { grid-template-columns:1fr 1fr; }
+ .tide-event { gap:6px; padding:8px 7px; }
+ .tide-event-icon { width:23px; height:23px; }
+ .tide-event-height { font-size:10px; }
 }
 @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700;800&display=swap');
 .animate-spin { animation: spin 1s linear infinite; }
