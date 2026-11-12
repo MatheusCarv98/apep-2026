@@ -68,7 +68,6 @@ function etapaTitulo(n, etapasInfo) {
   return `Etapa ${n} — ${partes.join(" · ")}`;
 }
 
-const ADMIN_PIN = "APEP2026";
 
 function resizeImageFile(file, size = 240) {
   return new Promise((resolve, reject) => {
@@ -172,11 +171,49 @@ export default function ApepApp() {
   const [toast, setToast] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [showLogin, setShowLogin] = useState(false);
-  const [pinInput, setPinInput] = useState("");
-  const [pinError, setPinError] = useState(false);
+  const [adminEmailInput, setAdminEmailInput] = useState("");
+  const [adminPasswordInput, setAdminPasswordInput] = useState("");
+  const [loginError, setLoginError] = useState("");
+  const [loginPending, setLoginPending] = useState(false);
   const [adminName, setAdminName] = useState("");
-  const [adminNameInput, setAdminNameInput] = useState("");
   const [auditLogs, setAuditLogs] = useState([]);
+
+  // Restore a director's authenticated session on reload and revoke access
+  // immediately when Supabase signs the user out.
+  useEffect(() => {
+    let active = true;
+    const restoreDirector = async () => {
+      try {
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        if (!active || sessionError || !session?.user) return;
+        const { data: director, error } = await supabase
+          .from("apep_diretores")
+          .select("nome, ativo")
+          .eq("user_id", session.user.id)
+          .maybeSingle();
+        if (!active) return;
+        if (error || !director?.ativo) {
+          await supabase.auth.signOut();
+          return;
+        }
+        setAdminName(director.nome || session.user.email || "Diretoria");
+        setIsAdmin(true);
+      } catch (error) {
+        console.error("Falha ao restaurar sessão da diretoria", error);
+      }
+    };
+    restoreDirector();
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      if (!session || event === "SIGNED_OUT") {
+        setIsAdmin(false);
+        setAdminName("");
+      }
+    });
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
+  }, []);
 
   // ---- load ----
   useEffect(() => {
@@ -230,9 +267,9 @@ export default function ApepApp() {
   }, []);
 
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || !isAdmin) return;
     persist(pescadores, etapas, etapasInfo);
-  }, [pescadores, etapas, etapasInfo, loaded, persist]);
+  }, [pescadores, etapas, etapasInfo, loaded, isAdmin, persist]);
 
   function showToast(msg) {
     setToast(msg);
@@ -242,14 +279,16 @@ export default function ApepApp() {
   async function registrarAuditoria(acao, detalhes) {
     if (!adminName) return;
     try {
+      const { data: { user } } = await supabase.auth.getUser();
       const { error } = await supabase.from("apep_auditoria").insert({
-        responsavel: adminName, acao, detalhes, created_at: new Date().toISOString(),
+        user_id: user?.id, responsavel: adminName, acao, detalhes, created_at: new Date().toISOString(),
       });
       if (error) throw error;
     } catch (e) { console.error("Falha ao registrar auditoria", e); }
   }
 
   async function carregarAuditoria() {
+    if (!isAdmin) return;
     const { data, error } = await supabase.from("apep_auditoria")
       .select("id, responsavel, acao, detalhes, created_at")
       .order("created_at", { ascending: false }).limit(300);
@@ -288,23 +327,44 @@ export default function ApepApp() {
     }
   }
 
-  function tryLogin() {
-    if (pinInput === ADMIN_PIN && adminNameInput.trim()) {
-      const nomeResponsavel = adminNameInput.trim();
+  async function tryLogin() {
+    if (loginPending) return;
+    setLoginPending(true);
+    setLoginError("");
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: adminEmailInput.trim(),
+        password: adminPasswordInput,
+      });
+      if (error || !data.user) throw new Error("E-mail ou senha inválidos.");
+      const { data: director, error: directorError } = await supabase
+        .from("apep_diretores")
+        .select("nome, ativo")
+        .eq("user_id", data.user.id)
+        .maybeSingle();
+      if (directorError || !director?.ativo) {
+        await supabase.auth.signOut();
+        throw new Error("Esta conta ainda não tem acesso à diretoria.");
+      }
+      const nomeResponsavel = director.nome || data.user.email || "Diretoria";
       setAdminName(nomeResponsavel);
-      setAdminNameInput("");
       setIsAdmin(true);
-      supabase.from("apep_auditoria").insert({ responsavel: nomeResponsavel, acao: "Login", detalhes: "Acesso à área administrativa" });
       setShowLogin(false);
-      setPinInput("");
-      setPinError(false);
+      setAdminPasswordInput("");
+      await supabase.from("apep_auditoria").insert({
+        user_id: data.user.id, responsavel: nomeResponsavel,
+        acao: "Login", detalhes: "Acesso à área administrativa",
+      });
       showToast("Área da diretoria liberada");
-    } else {
-      setPinError(true);
+    } catch (error) {
+      setLoginError(error.message || "Não foi possível entrar. Tente novamente.");
+    } finally {
+      setLoginPending(false);
     }
   }
-  function logout() {
-    registrarAuditoria("Logout", "Saída da área administrativa");
+  async function logout() {
+    await registrarAuditoria("Logout", "Saída da área administrativa");
+    await supabase.auth.signOut();
     setIsAdmin(false);
     setAdminName("");
     if (tab === "pescadores" || tab === "etapa" || tab === "historico") setTab("classificacao");
@@ -610,18 +670,18 @@ export default function ApepApp() {
 
       {showLogin && (
         <LoginModal
-          pinInput={pinInput}
-          setPinInput={setPinInput}
-          adminNameInput={adminNameInput}
-          setAdminNameInput={setAdminNameInput}
-          pinError={pinError}
-          setPinError={setPinError}
+          email={adminEmailInput}
+          setEmail={setAdminEmailInput}
+          password={adminPasswordInput}
+          setPassword={setAdminPasswordInput}
+          error={loginError}
+          setError={setLoginError}
+          pending={loginPending}
           onConfirm={tryLogin}
           onClose={() => {
             setShowLogin(false);
-            setPinInput("");
-            setAdminNameInput("");
-            setPinError(false);
+            setAdminPasswordInput("");
+            setLoginError("");
           }}
         />
       )}
@@ -629,7 +689,7 @@ export default function ApepApp() {
   );
 }
 
-function LoginModal({ pinInput, setPinInput, adminNameInput, setAdminNameInput, pinError, setPinError, onConfirm, onClose }) {
+function LoginModal({ email, setEmail, password, setPassword, error, setError, pending, onConfirm, onClose }) {
   return (
     <div style={S.modalOverlay} onClick={onClose}>
       <div style={S.modalCard} onClick={(e) => e.stopPropagation()}>
@@ -643,34 +703,37 @@ function LoginModal({ pinInput, setPinInput, adminNameInput, setAdminNameInput, 
           Área da Diretoria
         </div>
         <div style={{ fontFamily: S.fonts.body, fontSize: 12.5, color: "#7c8a8e", textAlign: "center", marginTop: 4, marginBottom: 16 }}>
-          Digite a senha para cadastrar pescadores e lançar as etapas.
+          Entre com sua conta autorizada da diretoria.
         </div>
         <input
-          type="text"
-          value={adminNameInput}
-          onChange={(e) => setAdminNameInput(e.target.value)}
-          placeholder="Seu nome (responsável)"
+          type="email"
+          value={email}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            setError("");
+          }}
+          placeholder="E-mail"
           autoFocus
           style={{ ...S.input, width: "100%", boxSizing: "border-box", textAlign: "center", marginBottom: 9 }}
         />
         <input
           type="password"
-          value={pinInput}
+          value={password}
           onChange={(e) => {
-            setPinInput(e.target.value);
-            setPinError(false);
+            setPassword(e.target.value);
+            setError("");
           }}
           onKeyDown={(e) => e.key === "Enter" && onConfirm()}
-          placeholder="Senha da diretoria"
+          placeholder="Sua senha"
           style={{ ...S.input, width: "100%", boxSizing: "border-box", textAlign: "center", letterSpacing: 1 }}
         />
-        {pinError && (
+        {error && (
           <div style={{ display: "flex", alignItems: "center", gap: 5, color: "#c04a4a", fontFamily: S.fonts.body, fontSize: 12.5, marginTop: 8, justifyContent: "center" }}>
-            <AlertTriangle size={13} /> Informe seu nome e confira a senha.
+            <AlertTriangle size={13} /> {error}
           </div>
         )}
-        <button onClick={onConfirm} style={{ ...S.btnPrimary, width: "100%", justifyContent: "center", marginTop: 14 }}>
-          Entrar
+        <button onClick={onConfirm} disabled={pending} style={{ ...S.btnPrimary, width: "100%", justifyContent: "center", marginTop: 14, opacity: pending ? 0.7 : 1 }}>
+          {pending ? <><Loader2 size={15} className="animate-spin" /> Entrando…</> : "Entrar"}
         </button>
       </div>
     </div>
